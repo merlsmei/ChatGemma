@@ -75,7 +75,7 @@ fun SessionListScreen(
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Icon(
-                        Icons.Default.ChatBubbleOutline,
+                        Icons.Default.ChatBubble,
                         null,
                         modifier = Modifier.size(64.dp),
                         tint = MaterialTheme.colorScheme.onSurface.copy(0.3f)
@@ -140,7 +140,7 @@ fun SessionItem(
         },
         leadingContent = {
             Icon(
-                Icons.Default.ChatBubbleOutline,
+                Icons.Default.ChatBubble,
                 null,
                 tint = MaterialTheme.colorScheme.primary
             )

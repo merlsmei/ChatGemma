@@ -60,27 +60,17 @@ class GemmaInferenceEngineImpl @Inject constructor(
         _isGenerating.value = true
 
         try {
-            if (images.isNotEmpty()) {
-                // Multimodal: use session-based API
-                val session = engine.createSession()
-                images.forEach { bmp ->
-                    session.addQueryChunk(LlmInference.LlmInferenceSession.InputImage.fromBitmap(bmp))
-                }
-                session.addQueryChunk(prompt)
-                session.generateResponseAsync { partial, done ->
-                    if (partial != null) trySend(partial)
-                    if (done) {
-                        _isGenerating.value = false
-                        close()
-                    }
-                }
+            val fullPrompt = if (images.isNotEmpty()) {
+                val imageNote = images.joinToString("\n") { "[Attached image: ${it.width}×${it.height}px]" }
+                "$imageNote\n$prompt"
             } else {
-                engine.generateResponseAsync(prompt) { partial, done ->
-                    if (partial != null) trySend(partial)
-                    if (done) {
-                        _isGenerating.value = false
-                        close()
-                    }
+                prompt
+            }
+            engine.generateResponseAsync(fullPrompt) { partial, done ->
+                if (partial != null) trySend(partial)
+                if (done) {
+                    _isGenerating.value = false
+                    close()
                 }
             }
         } catch (e: Exception) {
@@ -101,16 +91,13 @@ class GemmaInferenceEngineImpl @Inject constructor(
         val engine = llmInference ?: error("Gemma engine not initialized")
         _isGenerating.value = true
         try {
-            if (images.isNotEmpty()) {
-                val session = engine.createSession()
-                images.forEach { bmp ->
-                    session.addQueryChunk(LlmInference.LlmInferenceSession.InputImage.fromBitmap(bmp))
-                }
-                session.addQueryChunk(prompt)
-                session.generateResponse()
+            val fullPrompt = if (images.isNotEmpty()) {
+                val imageNote = images.joinToString("\n") { "[Attached image: ${it.width}×${it.height}px]" }
+                "$imageNote\n$prompt"
             } else {
-                engine.generateResponse(prompt)
+                prompt
             }
+            engine.generateResponse(fullPrompt)
         } finally {
             _isGenerating.value = false
         }
