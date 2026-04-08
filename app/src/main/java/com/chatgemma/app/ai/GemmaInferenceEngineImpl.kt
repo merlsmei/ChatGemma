@@ -31,11 +31,11 @@ class GemmaInferenceEngineImpl @Inject constructor(
         withContext(Dispatchers.IO) {
             try {
                 release()
+                // tasks-genai:0.10.20 builder only exposes setModelPath and setMaxTokens;
+                // temperature/topK/randomSeed are not available on this builder version.
                 val options = LlmInference.LlmInferenceOptions.builder()
                     .setModelPath(modelPath)
                     .setMaxTokens(params.maxTokens)
-                    .setTemperature(params.temperature)
-                    .setRandomSeed(params.randomSeed)
                     .build()
                 llmInference = LlmInference.createFromOptions(context, options)
                 _isReady.value = true
