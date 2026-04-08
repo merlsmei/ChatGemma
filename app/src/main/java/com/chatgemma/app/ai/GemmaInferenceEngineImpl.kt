@@ -6,12 +6,11 @@ import com.chatgemma.app.domain.model.InferenceParams
 import com.google.mediapipe.tasks.genai.llminference.LlmInference
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -35,7 +34,6 @@ class GemmaInferenceEngineImpl @Inject constructor(
                 val options = LlmInference.LlmInferenceOptions.builder()
                     .setModelPath(modelPath)
                     .setMaxTokens(params.maxTokens)
-                    .setTopK(params.topK)
                     .setTemperature(params.temperature)
                     .setRandomSeed(params.randomSeed)
                     .build()
@@ -52,13 +50,9 @@ class GemmaInferenceEngineImpl @Inject constructor(
         prompt: String,
         images: List<Bitmap>,
         params: InferenceParams
-    ): Flow<String> = callbackFlow {
-        val engine = llmInference ?: run {
-            close(IllegalStateException("Gemma engine not initialized"))
-            return@callbackFlow
-        }
+    ): Flow<String> = flow {
+        val engine = llmInference ?: throw IllegalStateException("Gemma engine not initialized")
         _isGenerating.value = true
-
         try {
             val fullPrompt = if (images.isNotEmpty()) {
                 val imageNote = images.joinToString("\n") { "[Attached image: ${it.width}×${it.height}px]" }
@@ -66,19 +60,8 @@ class GemmaInferenceEngineImpl @Inject constructor(
             } else {
                 prompt
             }
-            engine.generateResponseAsync(fullPrompt) { partial, done ->
-                if (partial != null) trySend(partial)
-                if (done) {
-                    _isGenerating.value = false
-                    close()
-                }
-            }
-        } catch (e: Exception) {
-            _isGenerating.value = false
-            close(e)
-        }
-
-        awaitClose {
+            emit(withContext(Dispatchers.IO) { engine.generateResponse(fullPrompt) })
+        } finally {
             _isGenerating.value = false
         }
     }
@@ -104,9 +87,6 @@ class GemmaInferenceEngineImpl @Inject constructor(
     }
 
     override fun cancelGeneration() {
-        // Cancellation handled by coroutine scope on the collector side.
-        // MediaPipe LlmInference does not expose an explicit cancel API;
-        // closing the callbackFlow channel achieves the same effect.
         _isGenerating.value = false
     }
 
@@ -120,7 +100,6 @@ class GemmaInferenceEngineImpl @Inject constructor(
     }
 
     override suspend fun countTokens(text: String): Int {
-        // Approximate: ~4 chars per token (BPE heuristic for English/Chinese mixed)
         return (text.length / 4).coerceAtLeast(1)
     }
 }
