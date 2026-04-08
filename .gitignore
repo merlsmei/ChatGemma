@@ -1,0 +1,27 @@
+*.iml
+.gradle
+/local.properties
+/.idea/caches
+/.idea/libraries
+/.idea/modules.xml
+/.idea/workspace.xml
+/.idea/navEditor.xml
+/.idea/assetWizardSettings.xml
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+*.apk
+*.aab
+*.ap_
+*.class
+bin/
+gen/
+out/
+release/
+# Model files (too large for git)
+app/src/main/assets/*.bin
+app/src/main/assets/*.task
+app/src/main/assets/*.gguf

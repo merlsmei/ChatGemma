@@ -1,0 +1,82 @@
+name: Build & Release APK
+
+on:
+  push:
+    branches:
+      - "claude/android-gemma-chat-app-j6GOG"
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: gradle
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: wrapper
+
+      - name: Make gradlew executable
+        run: chmod +x gradlew
+
+      - name: Build Debug APK
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Upload APK as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ChatGemma-debug-${{ github.run_number }}
+          path: app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 30
+
+      - name: Get short SHA
+        id: sha
+        run: echo "short=$(echo ${{ github.sha }} | cut -c1-7)" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: "ChatGemma Build #${{ github.run_number }} (${{ steps.sha.outputs.short }})"
+          body: |
+            ## ChatGemma — Automated Build
+
+            **Build:** #${{ github.run_number }}
+            **Commit:** ${{ github.sha }}
+            **Branch:** ${{ github.ref_name }}
+
+            ### Installation
+            1. Download `app-debug.apk` below
+            2. On your Android device, go to **Settings → Security → Install unknown apps** and allow your browser/file manager
+            3. Open the APK file and install
+            4. On first launch, go to **Model Manager** and download a Gemma model to start chatting
+
+            ### First-Time Setup
+            - Requires Android 8.0 (API 26) or higher
+            - Recommended: 6GB+ RAM device for Gemma 3B models
+            - Model files are **not bundled** — download via the in-app Model Manager
+
+            ### Features
+            - On-device Gemma 4 multimodal chat (text, voice, image, video)
+            - Session management with branching & rollback
+            - Context management: topic compression, summarization, archiving
+            - Weekly HuggingFace model update tracking
+            - ChatGPT-style UI with dark/light theme
+          files: app/build/outputs/apk/debug/app-debug.apk
+          prerelease: false
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

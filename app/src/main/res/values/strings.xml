@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ChatGemma</string>
+    <string name="new_chat">New Chat</string>
+    <string name="sessions">Sessions</string>
+    <string name="model_manager">Model Manager</string>
+    <string name="settings">Settings</string>
+    <string name="context_manager">Context Manager</string>
+    <string name="message_hint">Message Gemma…</string>
+    <string name="send">Send</string>
+    <string name="cancel">Cancel</string>
+    <string name="delete">Delete</string>
+    <string name="archive">Archive</string>
+    <string name="compress">Compress</string>
+    <string name="summarize">Summarize</string>
+    <string name="restore">Restore</string>
+    <string name="download">Download</string>
+    <string name="no_model_error">No model downloaded. Go to Model Manager to download a Gemma model.</string>
+    <string name="context_alert_title">Context Almost Full</string>
+    <string name="context_alert_message">Your context is %1$d%% full. Consider archiving or compressing some topics.</string>
+</resources>
