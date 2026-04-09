@@ -18,6 +18,7 @@ data class ModelManagerUiState(
     val models: List<ModelVersion> = emptyList(),
     val isCheckingUpdates: Boolean = false,
     val downloadProgress: Map<String, Int> = emptyMap(),
+    val downloadPending: Set<String> = emptySet(),
     val error: String? = null
 )
 
@@ -36,14 +37,23 @@ class ModelManagerViewModel @Inject constructor(
         modelRepository.getAllModels()
             .onEach { models -> _uiState.update { it.copy(models = models) } }
             .launchIn(viewModelScope)
+
+        // Auto-fetch on first open if the database is empty
+        viewModelScope.launch {
+            val cached = modelRepository.getAllModels().first()
+            if (cached.isEmpty()) checkForUpdates()
+        }
     }
 
     fun downloadModel(modelId: String) {
         viewModelScope.launch {
+            _uiState.update { it.copy(downloadPending = it.downloadPending + modelId) }
             try {
                 downloadModelUseCase(modelId)
             } catch (e: Exception) {
-                _uiState.update { it.copy(error = "Download failed: ${e.message}") }
+                _uiState.update { it.copy(error = e.message ?: "Download failed") }
+            } finally {
+                _uiState.update { it.copy(downloadPending = it.downloadPending - modelId) }
             }
         }
     }

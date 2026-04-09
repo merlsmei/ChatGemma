@@ -80,7 +80,16 @@ fun ModelManagerScreen(
     val downloadedGroups = remember(downloaded) { downloaded.toGenerationGroups() }
     val availableGroups  = remember(available)  { available.toGenerationGroups() }
 
+    val snackbarHostState = remember { SnackbarHostState() }
+    LaunchedEffect(state.error) {
+        state.error?.let {
+            snackbarHostState.showSnackbar(it)
+            viewModel.dismissError()
+        }
+    }
+
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = { Text("Model Manager") },
@@ -182,6 +191,7 @@ fun ModelManagerScreen(
                         ModelCard(
                             model = model,
                             downloadProgress = state.downloadProgress[model.id],
+                            downloadPending = model.id in state.downloadPending,
                             onDownload  = { viewModel.downloadModel(model.id) },
                             onActivate  = { viewModel.setActiveModel(model.id) },
                             onDelete    = { viewModel.deleteModel(model.id) }
@@ -208,6 +218,7 @@ fun ModelManagerScreen(
                         ModelCard(
                             model = model,
                             downloadProgress = state.downloadProgress[model.id],
+                            downloadPending = model.id in state.downloadPending,
                             onDownload  = { viewModel.downloadModel(model.id) },
                             onActivate  = { viewModel.setActiveModel(model.id) },
                             onDelete    = { viewModel.deleteModel(model.id) }
@@ -246,6 +257,7 @@ private fun GenerationHeader(label: String, count: Int? = null) {
 fun ModelCard(
     model: ModelVersion,
     downloadProgress: Int?,
+    downloadPending: Boolean = false,
     onDownload: () -> Unit,
     onActivate: () -> Unit,
     onDelete: () -> Unit
@@ -383,7 +395,7 @@ fun ModelCard(
                 if (!model.isDownloaded) {
                     Button(
                         onClick = onDownload,
-                        enabled = downloadProgress == null
+                        enabled = downloadProgress == null && !downloadPending
                     ) {
                         Icon(Icons.Default.Download, null, modifier = Modifier.size(16.dp))
                         Spacer(Modifier.width(4.dp))
