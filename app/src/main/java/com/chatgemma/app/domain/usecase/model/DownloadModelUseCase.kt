@@ -6,7 +6,7 @@ import javax.inject.Inject
 class DownloadModelUseCase @Inject constructor(
     private val modelRepository: ModelRepository
 ) {
-    operator fun invoke(modelId: String) {
+    suspend operator fun invoke(modelId: String) {
         modelRepository.enqueueDownload(modelId)
     }
 }

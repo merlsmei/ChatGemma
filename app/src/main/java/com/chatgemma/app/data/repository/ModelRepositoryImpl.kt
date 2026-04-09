@@ -205,10 +205,10 @@ class ModelRepositoryImpl @Inject constructor(
 
     // ── Download / delete ───────────────────────────────────────────────────
 
-    override fun enqueueDownload(modelId: String) {
-        val model = runCatching {
-            kotlinx.coroutines.runBlocking { modelVersionDao.getModelById(modelId) }
-        }.getOrNull() ?: return
+    override suspend fun enqueueDownload(modelId: String) {
+        val model = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            modelVersionDao.getModelById(modelId)
+        } ?: return
 
         val inputData = Data.Builder()
             .putString(ModelDownloadWorker.KEY_MODEL_ID, modelId)

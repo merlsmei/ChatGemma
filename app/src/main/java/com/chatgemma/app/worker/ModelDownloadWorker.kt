@@ -36,9 +36,8 @@ class ModelDownloadWorker @AssistedInject constructor(
         val downloadUrl = inputData.getString(KEY_DOWNLOAD_URL)
             ?: return Result.failure(workDataOf(KEY_ERROR to "Missing download URL"))
 
-        setForeground(createForegroundInfo("Downloading $modelId", 0))
-
         return try {
+            setForeground(createForegroundInfo("Downloading $modelId", 0))
             val localPath = downloadModel(modelId, downloadUrl) { progress ->
                 setProgressAsync(workDataOf(KEY_PROGRESS to progress))
                 setForeground(createForegroundInfo("Downloading $modelId", progress))

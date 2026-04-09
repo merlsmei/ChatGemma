@@ -10,7 +10,7 @@ interface ModelRepository {
     suspend fun getModelById(id: String): ModelVersion?
     suspend fun setActiveModel(modelId: String)
     suspend fun checkForUpdates(): List<ModelVersion>
-    fun enqueueDownload(modelId: String)
+    suspend fun enqueueDownload(modelId: String)
     suspend fun deleteModel(modelId: String)
     suspend fun markDownloaded(modelId: String, localPath: String)
 }

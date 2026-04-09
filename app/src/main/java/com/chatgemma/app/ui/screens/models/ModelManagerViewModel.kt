@@ -39,7 +39,9 @@ class ModelManagerViewModel @Inject constructor(
     }
 
     fun downloadModel(modelId: String) {
-        downloadModelUseCase(modelId)
+        viewModelScope.launch {
+            downloadModelUseCase(modelId)
+        }
     }
 
     fun setActiveModel(modelId: String) {
