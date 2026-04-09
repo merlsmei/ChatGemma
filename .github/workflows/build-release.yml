@@ -86,12 +86,21 @@ jobs:
           ls -lh app/src/main/jniLibs/arm64-v8a/
 
           # ── Copy headers ───────────────────────────────────────────────────
+          # Modern llama.cpp splits headers across include/ and ggml/include/;
+          # copy all *.h from every public include location so transitive
+          # dependencies like ggml-cpu.h, ggml-alloc.h, ggml-backend.h, etc.
+          # are available when compiling llama_jni.cpp.
           mkdir -p app/src/main/cpp/llama_include
-          find llama_src -name "llama.h" ! -path "*/test*" ! -path "*/example*" \
-            | head -1 | xargs -I{} cp {} app/src/main/cpp/llama_include/
-          find llama_src -name "ggml.h" ! -path "*/test*" \
-            | head -1 | xargs -I{} cp {} app/src/main/cpp/llama_include/ 2>/dev/null || true
-          echo "Headers:"
+          # Root-level headers (older layout)
+          find llama_src -maxdepth 1 -name "*.h" \
+            -exec cp {} app/src/main/cpp/llama_include/ \; 2>/dev/null || true
+          # include/ subdir (newer layout: llama.h lives here)
+          find llama_src/include -name "*.h" \
+            -exec cp {} app/src/main/cpp/llama_include/ \; 2>/dev/null || true
+          # ggml/include/ (ggml.h, ggml-cpu.h, ggml-alloc.h, ggml-backend.h, …)
+          find llama_src/ggml/include -name "*.h" \
+            -exec cp {} app/src/main/cpp/llama_include/ \; 2>/dev/null || true
+          echo "Headers copied:"
           ls -lh app/src/main/cpp/llama_include/
 
       - name: Build Debug APK
