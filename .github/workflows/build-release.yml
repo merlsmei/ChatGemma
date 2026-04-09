@@ -34,21 +34,41 @@ jobs:
 
       - name: Download llama.cpp Android libraries
         run: |
-          # Resolve the latest llama.cpp release tag
-          TAG=$(curl -sf "https://api.github.com/repos/ggerganov/llama.cpp/releases/latest" \
+          set -e
+
+          # ── 1. Resolve latest llama.cpp release tag ─────────────────────────
+          PINNED_TAG="b5572"   # fallback if API call fails
+          API_JSON=$(curl -fsSL \
             -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            | python3 -c "import sys,json; print(json.load(sys.stdin)['tag_name'])")
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/ggerganov/llama.cpp/releases/latest" 2>/dev/null || echo "{}")
+          TAG=$(echo "$API_JSON" | python3 -c \
+            "import sys,json; d=json.load(sys.stdin); print(d['tag_name'])" 2>/dev/null || echo "")
+          if [ -z "$TAG" ]; then
+            echo "Warning: GitHub API did not return a tag — using pinned fallback $PINNED_TAG"
+            TAG="$PINNED_TAG"
+          fi
           echo "llama.cpp release: $TAG"
 
-          # Download the pre-built Android zip
-          ZIP_URL="https://github.com/ggerganov/llama.cpp/releases/download/${TAG}/llama-${TAG}-android.zip"
-          if ! curl -fsSL -o llama-android.zip "$ZIP_URL"; then
-            # Some releases use a different naming convention
-            ZIP_URL="https://github.com/ggerganov/llama.cpp/releases/download/${TAG}/llama-${TAG}-bin-android.zip"
-            curl -fsSL -o llama-android.zip "$ZIP_URL"
+          # ── 2. Download pre-built Android zip ──────────────────────────────
+          BASE_DL="https://github.com/ggerganov/llama.cpp/releases/download/${TAG}"
+          downloaded=false
+          for name in \
+            "llama-${TAG}-android.zip" \
+            "llama-${TAG}-bin-android.zip" \
+            "llama-${TAG}-bin-ubuntu-x64.zip"; do
+            echo "Trying: ${BASE_DL}/${name}"
+            if curl -fsSL -o llama-android.zip "${BASE_DL}/${name}"; then
+              downloaded=true
+              break
+            fi
+          done
+          if [ "$downloaded" = false ]; then
+            echo "ERROR: Could not download llama.cpp Android binaries."
+            exit 1
           fi
 
-          # Extract arm64-v8a shared libraries
+          # ── 3. Extract arm64-v8a .so files ──────────────────────────────────
           mkdir -p app/src/main/jniLibs/arm64-v8a
           unzip -q llama-android.zip -d llama-android
           find llama-android -name "*.so" -path "*/arm64-v8a/*" \
@@ -56,14 +76,15 @@ jobs:
           echo "Shared libraries:"
           ls -lh app/src/main/jniLibs/arm64-v8a/
 
-          # Download llama.h (try include/ subdirectory first, then root)
+          # ── 4. Download headers ─────────────────────────────────────────────
           mkdir -p app/src/main/cpp/llama_include
           BASE_RAW="https://raw.githubusercontent.com/ggerganov/llama.cpp/${TAG}"
+          # llama.h: try include/ first (post-refactor layout), then root
           curl -fsSL "${BASE_RAW}/include/llama.h" \
             -o app/src/main/cpp/llama_include/llama.h 2>/dev/null || \
           curl -fsSL "${BASE_RAW}/llama.h" \
             -o app/src/main/cpp/llama_include/llama.h
-          # ggml.h (needed by some llama.h versions)
+          # ggml.h: needed by some llama.h versions
           curl -fsSL "${BASE_RAW}/ggml/include/ggml.h" \
             -o app/src/main/cpp/llama_include/ggml.h 2>/dev/null || \
           curl -fsSL "${BASE_RAW}/ggml.h" \
