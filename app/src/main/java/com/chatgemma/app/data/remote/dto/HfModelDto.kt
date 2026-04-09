@@ -8,8 +8,13 @@ data class HfModelDto(
     @SerializedName("tags") val tags: List<String> = emptyList(),
     @SerializedName("pipeline_tag") val pipelineTag: String? = null,
     @SerializedName("safetensors") val safetensors: SafetensorsInfo? = null,
+    @SerializedName("siblings") val siblings: List<HfSibling> = emptyList(),
     @SerializedName("downloads") val downloads: Int = 0,
     @SerializedName("likes") val likes: Int = 0
+)
+
+data class HfSibling(
+    @SerializedName("rfilename") val rfilename: String = ""
 )
 
 data class SafetensorsInfo(

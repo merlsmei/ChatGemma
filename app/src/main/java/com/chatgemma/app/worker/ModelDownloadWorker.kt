@@ -56,14 +56,22 @@ class ModelDownloadWorker @AssistedInject constructor(
         url: String,
         onProgress: suspend (Int) -> Unit
     ): String = withContext(Dispatchers.IO) {
-        val modelsDir = File(context.getExternalFilesDir(null), "models").also { it.mkdirs() }
-        val fileName = "${modelId.replace("/", "_")}.task"
+        val modelsDir = File(context.getExternalFilesDir(null) ?: context.filesDir, "models")
+            .also { it.mkdirs() }
+        val ext = url.substringAfterLast('.').takeIf { it.length in 2..5 } ?: "task"
+        val fileName = "${modelId.replace("/", "_")}.$ext"
         val destFile = File(modelsDir, fileName)
 
         val request = Request.Builder().url(url).build()
         val response = okHttpClient.newCall(request).execute()
 
         if (!response.isSuccessful) error("HTTP ${response.code}: ${response.message}")
+
+        val contentType = response.header("Content-Type", "") ?: ""
+        if (contentType.contains("text/html", ignoreCase = true)) {
+            response.close()
+            error("Got HTML response instead of model file. Check download URL or authentication.")
+        }
 
         val body = response.body ?: error("Empty response body")
         val totalBytes = body.contentLength()

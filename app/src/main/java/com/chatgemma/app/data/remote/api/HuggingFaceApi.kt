@@ -12,6 +12,7 @@ interface HuggingFaceApi {
         @Query("limit") limit: Int = 20,
         @Query("filter") filter: String? = null,
         @Query("direction") direction: Int = -1,
-        @Query("author") author: String? = null
+        @Query("author") author: String? = null,
+        @Query("full") full: Boolean = false
     ): List<HfModelDto>
 }
