@@ -9,9 +9,12 @@
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
 
+// Only the model is kept long-term; context is created fresh per generation
+// to avoid llama_kv_cache_clear / llama_kv_self_clear API naming differences.
 struct LlamaHandle {
-    llama_model*   model;
-    llama_context* ctx;
+    llama_model* model;
+    int nCtx;
+    int nThreads;
 };
 
 extern "C" {
@@ -26,28 +29,16 @@ Java_com_chatgemma_app_ai_LlamaCppInferenceEngine_nativeLoadModel(
         JNIEnv* env, jobject, jstring jPath, jint nCtx, jint nThreads) {
 
     const char* path = env->GetStringUTFChars(jPath, nullptr);
-
     llama_model_params mp = llama_model_default_params();
-    mp.n_gpu_layers = 0;   // CPU-only on Android
+    mp.n_gpu_layers = 0;  // CPU-only on Android
 
     llama_model* model = llama_load_model_from_file(path, mp);
     env->ReleaseStringUTFChars(jPath, path);
 
     if (!model) { LOGE("Failed to load model"); return 0L; }
 
-    llama_context_params cp = llama_context_default_params();
-    cp.n_ctx     = static_cast<uint32_t>(nCtx);
-    cp.n_threads = static_cast<uint32_t>(nThreads);
-
-    llama_context* ctx = llama_new_context_with_model(model, cp);
-    if (!ctx) {
-        LOGE("Failed to create context");
-        llama_free_model(model);
-        return 0L;
-    }
-
-    LOGI("Model loaded successfully, ctx=%d tokens, threads=%d", nCtx, nThreads);
-    auto* h = new LlamaHandle{model, ctx};
+    LOGI("Model loaded OK (nCtx=%d, nThreads=%d)", nCtx, nThreads);
+    auto* h = new LlamaHandle{model, nCtx, nThreads};
     return reinterpret_cast<jlong>(h);
 }
 
@@ -60,21 +51,32 @@ Java_com_chatgemma_app_ai_LlamaCppInferenceEngine_nativeGenerate(
     auto* h = reinterpret_cast<LlamaHandle*>(handle);
     if (!h) return env->NewStringUTF("");
 
+    // Create a fresh context so we never need to clear the KV cache.
+    // This sidesteps the llama_kv_cache_clear → llama_kv_self_clear rename.
+    llama_context_params cp = llama_context_default_params();
+    cp.n_ctx     = static_cast<uint32_t>(h->nCtx);
+    cp.n_threads = static_cast<uint32_t>(h->nThreads);
+    llama_context* ctx = llama_new_context_with_model(h->model, cp);
+    if (!ctx) {
+        LOGE("Failed to create context");
+        return env->NewStringUTF("[Error: context creation failed]");
+    }
+
     const char* prompt = env->GetStringUTFChars(jPrompt, nullptr);
 
-    // Tokenise the prompt (first call with nullptr to get count)
+    // Tokenise (first call with nullptr to get count)
     int nPrompt = -llama_tokenize(h->model, prompt, (int32_t)strlen(prompt),
                                   nullptr, 0, /*add_special=*/true, /*parse_special=*/true);
-    std::vector<llama_token> promptTokens(nPrompt);
+    std::vector<llama_token> tokens(nPrompt);
     llama_tokenize(h->model, prompt, (int32_t)strlen(prompt),
-                   promptTokens.data(), nPrompt, true, true);
+                   tokens.data(), nPrompt, true, true);
     env->ReleaseStringUTFChars(jPrompt, prompt);
 
-    // Evaluate prompt
-    llama_kv_cache_clear(h->ctx);
-    llama_batch batch = llama_batch_get_one(promptTokens.data(), (int32_t)promptTokens.size());
-    if (llama_decode(h->ctx, batch) != 0) {
+    // Evaluate prompt tokens
+    llama_batch batch = llama_batch_get_one(tokens.data(), (int32_t)tokens.size());
+    if (llama_decode(ctx, batch) != 0) {
         LOGE("Prompt decode failed");
+        llama_free(ctx);
         return env->NewStringUTF("[Error: prompt decode failed]");
     }
 
@@ -89,13 +91,12 @@ Java_com_chatgemma_app_ai_LlamaCppInferenceEngine_nativeGenerate(
         llama_sampler_chain_add(sampler, llama_sampler_init_dist(42));
     }
 
+    // Generate tokens
     std::string output;
     output.reserve(512);
-
     for (int i = 0; i < maxNewTokens; ++i) {
-        llama_token tok = llama_sampler_sample(sampler, h->ctx, -1);
+        llama_token tok = llama_sampler_sample(sampler, ctx, -1);
         llama_sampler_accept(sampler, tok);
-
         if (llama_token_is_eog(h->model, tok)) break;
 
         char piece[256];
@@ -103,10 +104,11 @@ Java_com_chatgemma_app_ai_LlamaCppInferenceEngine_nativeGenerate(
         if (n > 0) output.append(piece, n);
 
         llama_batch next = llama_batch_get_one(&tok, 1);
-        if (llama_decode(h->ctx, next) != 0) break;
+        if (llama_decode(ctx, next) != 0) break;
     }
 
     llama_sampler_free(sampler);
+    llama_free(ctx);
     return env->NewStringUTF(output.c_str());
 }
 
@@ -127,7 +129,6 @@ Java_com_chatgemma_app_ai_LlamaCppInferenceEngine_nativeFree(
         JNIEnv*, jobject, jlong handle) {
     auto* h = reinterpret_cast<LlamaHandle*>(handle);
     if (!h) return;
-    llama_free(h->ctx);
     llama_free_model(h->model);
     delete h;
     LOGI("Model freed");
