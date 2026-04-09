@@ -32,7 +32,7 @@ Java_com_chatgemma_app_ai_LlamaCppInferenceEngine_nativeLoadModel(
     llama_model_params mp = llama_model_default_params();
     mp.n_gpu_layers = 0;  // CPU-only on Android
 
-    llama_model* model = llama_load_model_from_file(path, mp);
+    llama_model* model = llama_model_load_from_file(path, mp);
     env->ReleaseStringUTFChars(jPath, path);
 
     if (!model) { LOGE("Failed to load model"); return 0L; }
@@ -56,19 +56,20 @@ Java_com_chatgemma_app_ai_LlamaCppInferenceEngine_nativeGenerate(
     llama_context_params cp = llama_context_default_params();
     cp.n_ctx     = static_cast<uint32_t>(h->nCtx);
     cp.n_threads = static_cast<uint32_t>(h->nThreads);
-    llama_context* ctx = llama_new_context_with_model(h->model, cp);
+    llama_context* ctx = llama_init_from_model(h->model, cp);
     if (!ctx) {
         LOGE("Failed to create context");
         return env->NewStringUTF("[Error: context creation failed]");
     }
 
+    const struct llama_vocab* vocab = llama_model_get_vocab(h->model);
     const char* prompt = env->GetStringUTFChars(jPrompt, nullptr);
 
     // Tokenise (first call with nullptr to get count)
-    int nPrompt = -llama_tokenize(h->model, prompt, (int32_t)strlen(prompt),
+    int nPrompt = -llama_tokenize(vocab, prompt, (int32_t)strlen(prompt),
                                   nullptr, 0, /*add_special=*/true, /*parse_special=*/true);
     std::vector<llama_token> tokens(nPrompt);
-    llama_tokenize(h->model, prompt, (int32_t)strlen(prompt),
+    llama_tokenize(vocab, prompt, (int32_t)strlen(prompt),
                    tokens.data(), nPrompt, true, true);
     env->ReleaseStringUTFChars(jPrompt, prompt);
 
@@ -97,10 +98,10 @@ Java_com_chatgemma_app_ai_LlamaCppInferenceEngine_nativeGenerate(
     for (int i = 0; i < maxNewTokens; ++i) {
         llama_token tok = llama_sampler_sample(sampler, ctx, -1);
         llama_sampler_accept(sampler, tok);
-        if (llama_token_is_eog(h->model, tok)) break;
+        if (llama_vocab_is_eog(vocab, tok)) break;
 
         char piece[256];
-        int n = llama_token_to_piece(h->model, tok, piece, sizeof(piece), 0, true);
+        int n = llama_token_to_piece(vocab, tok, piece, sizeof(piece), 0, true);
         if (n > 0) output.append(piece, n);
 
         llama_batch next = llama_batch_get_one(&tok, 1);
@@ -117,8 +118,9 @@ Java_com_chatgemma_app_ai_LlamaCppInferenceEngine_nativeCountTokens(
         JNIEnv* env, jobject, jlong handle, jstring jText) {
     auto* h = reinterpret_cast<LlamaHandle*>(handle);
     if (!h) return 0;
+    const struct llama_vocab* vocab = llama_model_get_vocab(h->model);
     const char* text = env->GetStringUTFChars(jText, nullptr);
-    int n = -llama_tokenize(h->model, text, (int32_t)strlen(text),
+    int n = -llama_tokenize(vocab, text, (int32_t)strlen(text),
                             nullptr, 0, false, false);
     env->ReleaseStringUTFChars(jText, text);
     return n > 0 ? n : 0;
@@ -129,7 +131,7 @@ Java_com_chatgemma_app_ai_LlamaCppInferenceEngine_nativeFree(
         JNIEnv*, jobject, jlong handle) {
     auto* h = reinterpret_cast<LlamaHandle*>(handle);
     if (!h) return;
-    llama_free_model(h->model);
+    llama_model_free(h->model);
     delete h;
     LOGI("Model freed");
 }
