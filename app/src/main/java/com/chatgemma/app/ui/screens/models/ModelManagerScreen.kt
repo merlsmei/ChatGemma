@@ -1,14 +1,19 @@
 package com.chatgemma.app.ui.screens.models
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -373,32 +378,21 @@ fun ModelCard(
                 }
             }
 
-            // Row 4: download progress
-            downloadProgress?.let { progress ->
-                Spacer(Modifier.height(8.dp))
-                LinearProgressIndicator(
-                    progress = { progress / 100f },
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Text(
-                    "Downloading… $progress%",
-                    style = MaterialTheme.typography.labelSmall,
-                    modifier = Modifier.padding(top = 2.dp)
-                )
-            }
-
             Spacer(Modifier.height(10.dp))
 
-            // Row 5: action buttons
+            // Row 4: action buttons / progress bar
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (!model.isDownloaded) {
-                    Button(
-                        onClick = onDownload,
-                        enabled = downloadProgress == null && !downloadPending
-                    ) {
-                        Icon(Icons.Default.Download, null, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("Download")
+                    if (downloadProgress != null) {
+                        DownloadProgressButton(progress = downloadProgress)
+                    } else if (downloadPending) {
+                        DownloadProgressButton(progress = 0, preparing = true)
+                    } else {
+                        Button(onClick = onDownload) {
+                            Icon(Icons.Default.Download, null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Download")
+                        }
                     }
                 } else {
                     if (!model.isActive) {
@@ -436,6 +430,48 @@ fun ModelCard(
             dismissButton = {
                 TextButton(onClick = { showDeleteConfirm = false }) { Text("Cancel") }
             }
+        )
+    }
+}
+
+// ── Download progress button ─────────────────────────────────────────────────
+
+@Composable
+private fun DownloadProgressButton(
+    progress: Int,
+    preparing: Boolean = false,
+    modifier: Modifier = Modifier
+) {
+    val shape = RoundedCornerShape(50)
+    val animatedProgress by animateFloatAsState(
+        targetValue = progress / 100f,
+        animationSpec = tween(durationMillis = 300),
+        label = "download_progress"
+    )
+
+    Box(
+        modifier = modifier
+            .height(40.dp)
+            .widthIn(min = 140.dp)
+            .clip(shape)
+            .background(Color(0xFF1A237E).copy(alpha = 0.3f)),
+        contentAlignment = Alignment.Center
+    ) {
+        // Blue fill layer — sweeps left to right
+        Box(
+            modifier = Modifier
+                .fillMaxHeight()
+                .fillMaxWidth(fraction = if (preparing) 0f else animatedProgress)
+                .clip(shape)
+                .background(Color(0xFF1976D2))
+                .align(Alignment.CenterStart)
+        )
+        // Text overlay
+        Text(
+            text = if (preparing) "Preparing…" else "$progress%",
+            color = Color.White,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold
         )
     }
 }
