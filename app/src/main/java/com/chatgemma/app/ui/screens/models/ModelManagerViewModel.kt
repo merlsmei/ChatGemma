@@ -22,6 +22,7 @@ data class ModelManagerUiState(
     val isCheckingUpdates: Boolean = false,
     val downloadProgress: Map<String, Int> = emptyMap(),
     val downloadPending: Set<String> = emptySet(),
+    val notDownloadable: Set<String> = emptySet(),
     val error: String? = null
 )
 
@@ -56,11 +57,21 @@ class ModelManagerViewModel @Inject constructor(
                 downloadModelUseCase(modelId)
                 observeDownloadProgress(modelId)
             } catch (e: Exception) {
-                _uiState.update {
-                    it.copy(
-                        error = e.message ?: "Download failed",
-                        downloadPending = it.downloadPending - modelId
-                    )
+                val msg = e.message ?: "Download failed"
+                if (msg.contains("No downloadable model file")) {
+                    _uiState.update {
+                        it.copy(
+                            notDownloadable = it.notDownloadable + modelId,
+                            downloadPending = it.downloadPending - modelId
+                        )
+                    }
+                } else {
+                    _uiState.update {
+                        it.copy(
+                            error = msg,
+                            downloadPending = it.downloadPending - modelId
+                        )
+                    }
                 }
             }
         }

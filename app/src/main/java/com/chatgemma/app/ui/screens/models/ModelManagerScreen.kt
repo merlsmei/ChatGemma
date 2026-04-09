@@ -201,6 +201,7 @@ fun ModelManagerScreen(
                             model = model,
                             downloadProgress = state.downloadProgress[model.id],
                             downloadPending = model.id in state.downloadPending,
+                            notDownloadable = model.id in state.notDownloadable,
                             onDownload  = { viewModel.downloadModel(model.id) },
                             onActivate  = { viewModel.setActiveModel(model.id) },
                             onDelete    = { viewModel.deleteModel(model.id) }
@@ -228,6 +229,7 @@ fun ModelManagerScreen(
                             model = model,
                             downloadProgress = state.downloadProgress[model.id],
                             downloadPending = model.id in state.downloadPending,
+                            notDownloadable = model.id in state.notDownloadable,
                             onDownload  = { viewModel.downloadModel(model.id) },
                             onActivate  = { viewModel.setActiveModel(model.id) },
                             onDelete    = { viewModel.deleteModel(model.id) }
@@ -267,6 +269,7 @@ fun ModelCard(
     model: ModelVersion,
     downloadProgress: Int?,
     downloadPending: Boolean = false,
+    notDownloadable: Boolean = false,
     onDownload: () -> Unit,
     onActivate: () -> Unit,
     onDelete: () -> Unit
@@ -386,9 +389,18 @@ fun ModelCard(
             Spacer(Modifier.height(10.dp))
 
             // Row 4: action buttons / progress bar
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 if (!model.isDownloaded) {
-                    if (downloadProgress != null) {
+                    if (notDownloadable) {
+                        Text(
+                            "Format not supported (no GGUF/.task file)",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                        )
+                    } else if (downloadProgress != null) {
                         DownloadProgressButton(progress = downloadProgress)
                     } else if (downloadPending) {
                         DownloadProgressButton(progress = 0, preparing = true)
