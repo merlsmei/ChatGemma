@@ -10,6 +10,18 @@ android {
     namespace = "com.chatgemma.app"
     compileSdk = 35
 
+    // Only wire up the NDK build when libllama.so has been downloaded (CI populates it)
+    val llamaSo = file("src/main/jniLibs/arm64-v8a/libllama.so")
+    if (llamaSo.exists()) {
+        ndkVersion = "27.2.12479018"
+        externalNativeBuild {
+            cmake {
+                path = "CMakeLists.txt"
+                version = "3.22.1+"
+            }
+        }
+    }
+
     defaultConfig {
         applicationId = "com.chatgemma.app"
         minSdk = 26
@@ -20,6 +32,13 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
             useSupportLibrary = true
+        }
+        if (llamaSo.exists()) {
+            externalNativeBuild {
+                cmake {
+                    abiFilters("arm64-v8a")
+                }
+            }
         }
     }
 

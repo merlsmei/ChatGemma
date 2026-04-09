@@ -140,15 +140,13 @@ fun ModelManagerScreen(
                         Spacer(Modifier.width(8.dp))
                         Column {
                             Text(
-                                "Only MediaPipe-compatible models (.task format) can run on-device. " +
-                                "Download one to start chatting.",
+                                "Download a Gemma model to start chatting. GGUF and .task formats are supported.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onPrimaryContainer
                             )
                             Spacer(Modifier.height(4.dp))
                             Text(
-                                "Google Official = verified from google/ on HuggingFace. " +
-                                "Mobile Ready = fits on phones with 6 GB+ RAM.",
+                                "Mobile Ready = fits on a 12 GB device. Q4_K_M GGUF is downloaded when available.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
                             )

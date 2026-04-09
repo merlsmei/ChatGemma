@@ -1,7 +1,7 @@
 package com.chatgemma.app.di
 
 import com.chatgemma.app.ai.GemmaInferenceEngine
-import com.chatgemma.app.ai.GemmaInferenceEngineImpl
+import com.chatgemma.app.ai.HybridInferenceEngine
 import dagger.Binds
 import dagger.Module
 import dagger.hilt.InstallIn
@@ -14,5 +14,5 @@ abstract class AiModule {
 
     @Binds
     @Singleton
-    abstract fun bindGemmaInferenceEngine(impl: GemmaInferenceEngineImpl): GemmaInferenceEngine
+    abstract fun bindGemmaInferenceEngine(impl: HybridInferenceEngine): GemmaInferenceEngine
 }

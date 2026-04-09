@@ -61,25 +61,20 @@ class ModelRepositoryImpl @Inject constructor(
                 )
             } catch (_: Exception) { emptyList() }
 
-            // 2. Fetch community MediaPipe-tagged models only
+            // 2. Fetch community GGUF models (most popular quantized Gemma)
             val communityDtos = try {
                 huggingFaceApi.searchModels(
-                    search = "gemma",
+                    search = "gemma gguf",
                     sort = "downloads",
-                    limit = 30,
-                    filter = "mediapipe"
+                    limit = 30
                 )
             } catch (_: Exception) { emptyList() }
 
-            // Combine: google first, then community (skip duplicates and GGUF/GGML)
+            // Combine: google first, then community (skip duplicates)
             val googleIds = googleDtos.map { it.modelId }.toSet()
             val combined: List<Pair<HfModelDto, String>> =
-                googleDtos
-                    .filter { !isIncompatibleFormat(it.modelId) }
-                    .map { it to "google" } +
-                communityDtos
-                    .filter { it.modelId !in googleIds && !isIncompatibleFormat(it.modelId) }
-                    .map { it to "community" }
+                googleDtos.map { it to "google" } +
+                communityDtos.filter { it.modelId !in googleIds }.map { it to "community" }
 
             combined.forEach { (dto, source) ->
                 if (dto.modelId.isBlank()) return@forEach
@@ -139,12 +134,6 @@ class ModelRepositoryImpl @Inject constructor(
         }
     }
 
-    /** Returns true for formats (GGUF, GGML) that MediaPipe cannot load. */
-    private fun isIncompatibleFormat(modelId: String): Boolean {
-        val lower = modelId.lowercase()
-        return lower.contains("gguf") || lower.contains("ggml")
-    }
-
     private fun parseGemmaGeneration(modelId: String): Int {
         val lower = modelId.lowercase()
         return when {
@@ -175,10 +164,17 @@ class ModelRepositoryImpl @Inject constructor(
     private fun parseQuantization(modelId: String, tags: List<String>): String {
         val lower = modelId.lowercase()
         return when {
-            lower.contains("int4") || lower.contains("q4") || lower.contains("gguf") -> "int4"
-            lower.contains("int8") || lower.contains("q8")                           -> "int8"
-            tags.any { it.contains("int4", ignoreCase = true) }                      -> "int4"
-            tags.any { it.contains("int8", ignoreCase = true) }                      -> "int8"
+            lower.contains("q4_k_m")                                   -> "Q4_K_M"
+            lower.contains("q4_k_s")                                   -> "Q4_K_S"
+            lower.contains("q4_0") || lower.contains("q4-0")          -> "Q4_0"
+            lower.contains("q5_k_m")                                   -> "Q5_K_M"
+            lower.contains("q5_0") || lower.contains("q5-0")          -> "Q5_0"
+            lower.contains("q8_0") || lower.contains("q8-0")          -> "Q8_0"
+            lower.contains("int4") || lower.contains("q4")            -> "int4"
+            lower.contains("int8") || lower.contains("q8")            -> "int8"
+            lower.contains("gguf")                                     -> "GGUF"
+            tags.any { it.contains("int4", ignoreCase = true) }       -> "int4"
+            tags.any { it.contains("int8", ignoreCase = true) }       -> "int8"
             else -> "fp16"
         }
     }
@@ -190,11 +186,15 @@ class ModelRepositoryImpl @Inject constructor(
     }
 
     private fun isMobileSuitable(sizeBytes: Long, quantization: String, paramCount: String): Boolean {
-        val mobileQuant = quantization in listOf("int4", "int8")
+        // Threshold sized for a 12 GB device: model + KV cache + Android OS overhead
+        val mobileQuant = quantization.lowercase().let {
+            it.contains("q4") || it.contains("q5") || it.contains("q8") ||
+            it.contains("int4") || it.contains("int8") || it == "gguf"
+        }
         return if (sizeBytes > 0L) {
-            sizeBytes <= 5L * 1024 * 1024 * 1024 && mobileQuant
+            sizeBytes <= 10L * 1024 * 1024 * 1024 && mobileQuant  // ≤ 10 GB on 12 GB device
         } else {
-            paramCount in listOf("0.5B", "1B", "1.1B", "2B", "4B") && mobileQuant
+            paramCount in listOf("0.5B", "1B", "1.1B", "2B", "4B", "7B", "9B") && mobileQuant
         }
     }
 
@@ -242,13 +242,19 @@ class ModelRepositoryImpl @Inject constructor(
                 throw IllegalStateException("Could not fetch model file list: ${e.message}")
             }
 
-            val taskFile = modelInfo.siblings.firstOrNull { it.rfilename.endsWith(".task") }
-                ?: throw IllegalStateException(
-                    "No compatible .task file found for \"$modelId\". " +
-                    "Only MediaPipe-quantized models (.task) can be loaded on-device."
-                )
+            // Prefer Q4_K_M GGUF for best mobile quality/size trade-off, then any GGUF, then .task
+            val modelFile = modelInfo.siblings.let { siblings ->
+                siblings.firstOrNull { it.rfilename.contains("Q4_K_M", ignoreCase = true) && it.rfilename.endsWith(".gguf") }
+                    ?: siblings.firstOrNull { it.rfilename.contains("Q4_0",   ignoreCase = true) && it.rfilename.endsWith(".gguf") }
+                    ?: siblings.firstOrNull { it.rfilename.contains("Q4",     ignoreCase = true) && it.rfilename.endsWith(".gguf") }
+                    ?: siblings.firstOrNull { it.rfilename.contains("Q5_K_M", ignoreCase = true) && it.rfilename.endsWith(".gguf") }
+                    ?: siblings.firstOrNull { it.rfilename.endsWith(".gguf") }
+                    ?: siblings.firstOrNull { it.rfilename.endsWith(".task") }
+            } ?: throw IllegalStateException(
+                "No downloadable model file (.gguf or .task) found for \"$modelId\"."
+            )
 
-            val downloadUrl = "https://huggingface.co/$modelId/resolve/main/${taskFile.rfilename}"
+            val downloadUrl = "https://huggingface.co/$modelId/resolve/main/${modelFile.rfilename}"
 
             modelVersionDao.getModelById(modelId) ?: return@withContext
 

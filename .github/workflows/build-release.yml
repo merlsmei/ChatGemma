@@ -32,6 +32,45 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x gradlew
 
+      - name: Download llama.cpp Android libraries
+        run: |
+          # Resolve the latest llama.cpp release tag
+          TAG=$(curl -sf "https://api.github.com/repos/ggerganov/llama.cpp/releases/latest" \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            | python3 -c "import sys,json; print(json.load(sys.stdin)['tag_name'])")
+          echo "llama.cpp release: $TAG"
+
+          # Download the pre-built Android zip
+          ZIP_URL="https://github.com/ggerganov/llama.cpp/releases/download/${TAG}/llama-${TAG}-android.zip"
+          if ! curl -fsSL -o llama-android.zip "$ZIP_URL"; then
+            # Some releases use a different naming convention
+            ZIP_URL="https://github.com/ggerganov/llama.cpp/releases/download/${TAG}/llama-${TAG}-bin-android.zip"
+            curl -fsSL -o llama-android.zip "$ZIP_URL"
+          fi
+
+          # Extract arm64-v8a shared libraries
+          mkdir -p app/src/main/jniLibs/arm64-v8a
+          unzip -q llama-android.zip -d llama-android
+          find llama-android -name "*.so" -path "*/arm64-v8a/*" \
+            -exec cp {} app/src/main/jniLibs/arm64-v8a/ \;
+          echo "Shared libraries:"
+          ls -lh app/src/main/jniLibs/arm64-v8a/
+
+          # Download llama.h (try include/ subdirectory first, then root)
+          mkdir -p app/src/main/cpp/llama_include
+          BASE_RAW="https://raw.githubusercontent.com/ggerganov/llama.cpp/${TAG}"
+          curl -fsSL "${BASE_RAW}/include/llama.h" \
+            -o app/src/main/cpp/llama_include/llama.h 2>/dev/null || \
+          curl -fsSL "${BASE_RAW}/llama.h" \
+            -o app/src/main/cpp/llama_include/llama.h
+          # ggml.h (needed by some llama.h versions)
+          curl -fsSL "${BASE_RAW}/ggml/include/ggml.h" \
+            -o app/src/main/cpp/llama_include/ggml.h 2>/dev/null || \
+          curl -fsSL "${BASE_RAW}/ggml.h" \
+            -o app/src/main/cpp/llama_include/ggml.h 2>/dev/null || true
+          echo "Headers:"
+          ls -lh app/src/main/cpp/llama_include/
+
       - name: Build Debug APK
         run: ./gradlew assembleDebug --no-daemon --stacktrace
 
@@ -66,7 +105,8 @@ jobs:
 
             ### First-Time Setup
             - Requires Android 8.0 (API 26) or higher
-            - Recommended: 6GB+ RAM device for Gemma 3B models
+            - Recommended: 12 GB RAM device; Mobile Ready badge shown for ≤10 GB models
+            - Supports **GGUF** (llama.cpp) and **.task** (MediaPipe) model formats
             - Model files are **not bundled** — download via the in-app Model Manager
 
             ### Features
