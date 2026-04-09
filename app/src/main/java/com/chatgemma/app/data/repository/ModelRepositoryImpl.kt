@@ -61,20 +61,25 @@ class ModelRepositoryImpl @Inject constructor(
                 )
             } catch (_: Exception) { emptyList() }
 
-            // 2. Fetch community models
+            // 2. Fetch community MediaPipe-tagged models only
             val communityDtos = try {
                 huggingFaceApi.searchModels(
                     search = "gemma",
                     sort = "downloads",
-                    limit = 30
+                    limit = 30,
+                    filter = "mediapipe"
                 )
             } catch (_: Exception) { emptyList() }
 
-            // Combine: google models first, then community (skip duplicates)
+            // Combine: google first, then community (skip duplicates and GGUF/GGML)
             val googleIds = googleDtos.map { it.modelId }.toSet()
             val combined: List<Pair<HfModelDto, String>> =
-                googleDtos.map { it to "google" } +
-                communityDtos.filter { it.modelId !in googleIds }.map { it to "community" }
+                googleDtos
+                    .filter { !isIncompatibleFormat(it.modelId) }
+                    .map { it to "google" } +
+                communityDtos
+                    .filter { it.modelId !in googleIds && !isIncompatibleFormat(it.modelId) }
+                    .map { it to "community" }
 
             combined.forEach { (dto, source) ->
                 if (dto.modelId.isBlank()) return@forEach
@@ -132,6 +137,12 @@ class ModelRepositoryImpl @Inject constructor(
                 modelVersionDao.markDeleted(entity.id)
             }
         }
+    }
+
+    /** Returns true for formats (GGUF, GGML) that MediaPipe cannot load. */
+    private fun isIncompatibleFormat(modelId: String): Boolean {
+        val lower = modelId.lowercase()
+        return lower.contains("gguf") || lower.contains("ggml")
     }
 
     private fun parseGemmaGeneration(modelId: String): Int {

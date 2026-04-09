@@ -140,14 +140,15 @@ fun ModelManagerScreen(
                         Spacer(Modifier.width(8.dp))
                         Column {
                             Text(
-                                "Download a Gemma model to start chatting. Models are stored on your device.",
+                                "Only MediaPipe-compatible models (.task format) can run on-device. " +
+                                "Download one to start chatting.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onPrimaryContainer
                             )
                             Spacer(Modifier.height(4.dp))
                             Text(
-                                "Google Official models are verified releases from google/ on HuggingFace. " +
-                                "Mobile Ready models run on phones with 6 GB+ RAM.",
+                                "Google Official = verified from google/ on HuggingFace. " +
+                                "Mobile Ready = fits on phones with 6 GB+ RAM.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
                             )
