@@ -111,7 +111,14 @@ class ModelManagerViewModel @Inject constructor(
                             )
                         }
                     }
-                    else -> { /* ENQUEUED, BLOCKED — keep pending */ }
+                    WorkInfo.State.ENQUEUED, WorkInfo.State.BLOCKED -> {
+                        _uiState.update {
+                            it.copy(
+                                downloadProgress = it.downloadProgress + (modelId to 0),
+                                downloadPending = it.downloadPending - modelId
+                            )
+                        }
+                    }
                 }
             }
             .launchIn(viewModelScope)

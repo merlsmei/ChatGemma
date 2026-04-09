@@ -1,6 +1,11 @@
 package com.chatgemma.app.ui.screens.models
 
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -443,10 +448,25 @@ private fun DownloadProgressButton(
     modifier: Modifier = Modifier
 ) {
     val shape = RoundedCornerShape(50)
+    val isIndeterminate = preparing || progress == 0
+
+    // Determinate fill animation
     val animatedProgress by animateFloatAsState(
         targetValue = progress / 100f,
         animationSpec = tween(durationMillis = 300),
         label = "download_progress"
+    )
+
+    // Indeterminate shimmer: a narrow bar sweeps back and forth
+    val infiniteTransition = rememberInfiniteTransition(label = "shimmer")
+    val shimmerOffset by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1200, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "shimmer_offset"
     )
 
     Box(
@@ -457,18 +477,34 @@ private fun DownloadProgressButton(
             .background(Color(0xFF1A237E).copy(alpha = 0.3f)),
         contentAlignment = Alignment.Center
     ) {
-        // Blue fill layer — sweeps left to right
-        Box(
-            modifier = Modifier
-                .fillMaxHeight()
-                .fillMaxWidth(fraction = if (preparing) 0f else animatedProgress)
-                .clip(shape)
-                .background(Color(0xFF1976D2))
-                .align(Alignment.CenterStart)
-        )
+        if (isIndeterminate) {
+            // Shimmer bar: 25% width sliding across
+            Box(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .fillMaxWidth(fraction = 0.25f)
+                    .offset(x = ((shimmerOffset * 140 * 0.75f).dp))
+                    .clip(shape)
+                    .background(Color(0xFF1976D2).copy(alpha = 0.6f))
+            )
+        } else {
+            // Determinate fill layer — sweeps left to right
+            Box(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .fillMaxWidth(fraction = animatedProgress)
+                    .clip(shape)
+                    .background(Color(0xFF1976D2))
+                    .align(Alignment.CenterStart)
+            )
+        }
         // Text overlay
         Text(
-            text = if (preparing) "Preparing…" else "$progress%",
+            text = when {
+                preparing -> "Preparing…"
+                progress == 0 -> "Starting…"
+                else -> "$progress%"
+            },
             color = Color.White,
             style = MaterialTheme.typography.labelMedium,
             fontWeight = FontWeight.SemiBold
