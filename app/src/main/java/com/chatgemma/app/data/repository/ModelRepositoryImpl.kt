@@ -148,6 +148,7 @@ class ModelRepositoryImpl @Inject constructor(
     private fun parseParamCount(modelId: String): String {
         val lower = modelId.lowercase()
         return when {
+            lower.contains("31b")  -> "31B"
             lower.contains("27b")  -> "27B"
             lower.contains("12b")  -> "12B"
             lower.contains("9b")   -> "9B"
@@ -208,6 +209,7 @@ class ModelRepositoryImpl @Inject constructor(
             "9B"   -> 9_000_000_000L
             "12B"  -> 12_000_000_000L
             "27B"  -> 27_000_000_000L
+            "31B"  -> 31_000_000_000L
             else   -> 0L
         }
         val multiplier = when (quantization) {
