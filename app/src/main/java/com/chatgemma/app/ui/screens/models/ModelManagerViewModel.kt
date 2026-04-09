@@ -40,19 +40,31 @@ class ModelManagerViewModel @Inject constructor(
 
     fun downloadModel(modelId: String) {
         viewModelScope.launch {
-            downloadModelUseCase(modelId)
+            try {
+                downloadModelUseCase(modelId)
+            } catch (e: Exception) {
+                _uiState.update { it.copy(error = "Download failed: ${e.message}") }
+            }
         }
     }
 
     fun setActiveModel(modelId: String) {
         viewModelScope.launch {
-            setActiveModelUseCase(modelId)
+            try {
+                setActiveModelUseCase(modelId)
+            } catch (e: Exception) {
+                _uiState.update { it.copy(error = "Failed to activate model: ${e.message}") }
+            }
         }
     }
 
     fun deleteModel(modelId: String) {
         viewModelScope.launch {
-            modelRepository.deleteModel(modelId)
+            try {
+                modelRepository.deleteModel(modelId)
+            } catch (e: Exception) {
+                _uiState.update { it.copy(error = "Delete failed: ${e.message}") }
+            }
         }
     }
 

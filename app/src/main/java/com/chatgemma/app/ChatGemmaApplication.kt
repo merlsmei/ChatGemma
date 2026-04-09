@@ -58,19 +58,23 @@ class ChatGemmaApplication : Application(), Configuration.Provider {
     }
 
     private fun scheduleModelUpdateCheck() {
-        val constraints = Constraints.Builder()
-            .setRequiredNetworkType(NetworkType.CONNECTED)
-            .build()
+        try {
+            val constraints = Constraints.Builder()
+                .setRequiredNetworkType(NetworkType.CONNECTED)
+                .build()
 
-        val request = PeriodicWorkRequestBuilder<ModelUpdateCheckWorker>(7, TimeUnit.DAYS)
-            .setConstraints(constraints)
-            .build()
+            val request = PeriodicWorkRequestBuilder<ModelUpdateCheckWorker>(7, TimeUnit.DAYS)
+                .setConstraints(constraints)
+                .build()
 
-        WorkManager.getInstance(this).enqueueUniquePeriodicWork(
-            WORK_MODEL_UPDATE_CHECK,
-            ExistingPeriodicWorkPolicy.KEEP,
-            request
-        )
+            WorkManager.getInstance(this).enqueueUniquePeriodicWork(
+                WORK_MODEL_UPDATE_CHECK,
+                ExistingPeriodicWorkPolicy.KEEP,
+                request
+            )
+        } catch (_: Exception) {
+            // Non-critical: periodic update check failed to schedule
+        }
     }
 
     companion object {

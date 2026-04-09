@@ -11,8 +11,10 @@ import com.chatgemma.app.data.remote.dto.HfModelDto
 import com.chatgemma.app.domain.model.ModelVersion
 import com.chatgemma.app.worker.ModelDownloadWorker
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.withContext
 import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -206,21 +208,21 @@ class ModelRepositoryImpl @Inject constructor(
     // ── Download / delete ───────────────────────────────────────────────────
 
     override suspend fun enqueueDownload(modelId: String) {
-        val model = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            modelVersionDao.getModelById(modelId)
-        } ?: return
+        withContext(Dispatchers.IO) {
+            val model = modelVersionDao.getModelById(modelId) ?: return@withContext
 
-        val inputData = Data.Builder()
-            .putString(ModelDownloadWorker.KEY_MODEL_ID, modelId)
-            .putString(ModelDownloadWorker.KEY_DOWNLOAD_URL, model.downloadUrl)
-            .build()
+            val inputData = Data.Builder()
+                .putString(ModelDownloadWorker.KEY_MODEL_ID, modelId)
+                .putString(ModelDownloadWorker.KEY_DOWNLOAD_URL, model.downloadUrl)
+                .build()
 
-        val request = OneTimeWorkRequestBuilder<ModelDownloadWorker>()
-            .setInputData(inputData)
-            .addTag("download_$modelId")
-            .build()
+            val request = OneTimeWorkRequestBuilder<ModelDownloadWorker>()
+                .setInputData(inputData)
+                .addTag("download_$modelId")
+                .build()
 
-        WorkManager.getInstance(context).enqueue(request)
+            WorkManager.getInstance(context).enqueue(request)
+        }
     }
 
     override suspend fun deleteModel(modelId: String) {
