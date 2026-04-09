@@ -51,24 +51,22 @@ class ModelRepositoryImpl @Inject constructor(
             // Clear any locally "downloaded" models whose file is missing or invalid (<1 MB)
             cleanupInvalidDownloads()
 
-            // 1. Fetch Google-official models with full file listing to find .task files
+            // 1. Fetch Google-official models
             val googleDtos = try {
                 huggingFaceApi.searchModels(
                     search = "gemma",
                     sort = "likes",
                     limit = 30,
-                    author = "google",
-                    full = true
+                    author = "google"
                 )
             } catch (_: Exception) { emptyList() }
 
-            // 2. Fetch community models with full file listing
+            // 2. Fetch community models
             val communityDtos = try {
                 huggingFaceApi.searchModels(
                     search = "gemma",
                     sort = "downloads",
-                    limit = 30,
-                    full = true
+                    limit = 30
                 )
             } catch (_: Exception) { emptyList() }
 
@@ -82,17 +80,11 @@ class ModelRepositoryImpl @Inject constructor(
                 if (dto.modelId.isBlank()) return@forEach
                 val existing = modelVersionDao.getModelById(dto.modelId)
                 if (existing == null) {
-                    // Only add models that have a downloadable .task file
-                    val model = buildModelVersion(dto, source, now) ?: return@forEach
+                    val model = buildModelVersion(dto, source, now)
                     modelVersionDao.insertModel(model.toEntity())
                     newModels.add(model)
                 } else {
-                    // Also update the download URL in case it was wrong before
-                    val correctUrl = resolveDownloadUrl(dto) ?: existing.downloadUrl
-                    modelVersionDao.updateModel(existing.copy(
-                        lastChecked = now,
-                        downloadUrl = correctUrl
-                    ))
+                    modelVersionDao.updateModel(existing.copy(lastChecked = now))
                 }
             }
             newModels
@@ -103,7 +95,7 @@ class ModelRepositoryImpl @Inject constructor(
 
     // ── Model metadata parsing ──────────────────────────────────────────────
 
-    private fun buildModelVersion(dto: HfModelDto, source: String, now: Long): ModelVersion? {
+    private fun buildModelVersion(dto: HfModelDto, source: String, now: Long): ModelVersion {
         val id = dto.modelId
         val gen = parseGemmaGeneration(id)
         val params = parseParamCount(id)
@@ -111,8 +103,6 @@ class ModelRepositoryImpl @Inject constructor(
         val ctx = parseContextLength(gen)
         val sizeBytes = dto.safetensors?.total?.takeIf { it > 0L }
             ?: estimateSizeBytes(params, quant)
-        // Only include models with a downloadable .task file
-        val downloadUrl = resolveDownloadUrl(dto) ?: return null
         return ModelVersion(
             id = id,
             displayName = formatDisplayName(id),
@@ -124,7 +114,7 @@ class ModelRepositoryImpl @Inject constructor(
             releaseDate = dto.lastModified ?: "",
             quantization = quant,
             contextLength = ctx,
-            downloadUrl = downloadUrl,
+            downloadUrl = "https://huggingface.co/$id",  // resolved at download time
             isMobileSuitable = isMobileSuitable(sizeBytes, quant, params),
             source = source,
             gemmaGeneration = gen,
@@ -142,13 +132,6 @@ class ModelRepositoryImpl @Inject constructor(
                 modelVersionDao.markDeleted(entity.id)
             }
         }
-    }
-
-    /** Returns the direct HuggingFace download URL for a .task file, or null if none found. */
-    private fun resolveDownloadUrl(dto: HfModelDto): String? {
-        val taskFile = dto.siblings.firstOrNull { it.rfilename.endsWith(".task") }
-            ?: return null
-        return "https://huggingface.co/${dto.modelId}/resolve/main/${taskFile.rfilename}"
     }
 
     private fun parseGemmaGeneration(modelId: String): Int {
@@ -241,11 +224,26 @@ class ModelRepositoryImpl @Inject constructor(
 
     override suspend fun enqueueDownload(modelId: String) {
         withContext(Dispatchers.IO) {
-            val model = modelVersionDao.getModelById(modelId) ?: return@withContext
+            // Fetch the model's file list to find the actual .task file URL
+            val modelInfo = try {
+                huggingFaceApi.getModelFiles(modelId)
+            } catch (e: Exception) {
+                throw IllegalStateException("Could not fetch model file list: ${e.message}")
+            }
+
+            val taskFile = modelInfo.siblings.firstOrNull { it.rfilename.endsWith(".task") }
+                ?: throw IllegalStateException(
+                    "No compatible .task file found for \"$modelId\". " +
+                    "Only MediaPipe-quantized models (.task) can be loaded on-device."
+                )
+
+            val downloadUrl = "https://huggingface.co/$modelId/resolve/main/${taskFile.rfilename}"
+
+            modelVersionDao.getModelById(modelId) ?: return@withContext
 
             val inputData = Data.Builder()
                 .putString(ModelDownloadWorker.KEY_MODEL_ID, modelId)
-                .putString(ModelDownloadWorker.KEY_DOWNLOAD_URL, model.downloadUrl)
+                .putString(ModelDownloadWorker.KEY_DOWNLOAD_URL, downloadUrl)
                 .build()
 
             val request = OneTimeWorkRequestBuilder<ModelDownloadWorker>()

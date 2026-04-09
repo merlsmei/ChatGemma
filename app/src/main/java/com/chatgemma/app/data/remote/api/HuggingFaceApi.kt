@@ -12,7 +12,12 @@ interface HuggingFaceApi {
         @Query("limit") limit: Int = 20,
         @Query("filter") filter: String? = null,
         @Query("direction") direction: Int = -1,
-        @Query("author") author: String? = null,
-        @Query("full") full: Boolean = false
+        @Query("author") author: String? = null
     ): List<HfModelDto>
+
+    /** Returns a single model's metadata including its full file list (siblings). */
+    @GET("api/models/{modelId}")
+    suspend fun getModelFiles(
+        @Path("modelId", encoded = true) modelId: String
+    ): HfModelDto
 }
