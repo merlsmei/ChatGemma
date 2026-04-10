@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - "claude/android-gemma-chat-app-j6GOG"
+      - "claude/model-download-progress-bar-Jlhq4"
       - main
   workflow_dispatch:
 
