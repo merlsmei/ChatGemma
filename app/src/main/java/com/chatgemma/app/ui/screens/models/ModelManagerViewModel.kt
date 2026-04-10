@@ -22,8 +22,10 @@ data class ModelManagerUiState(
     val isCheckingUpdates: Boolean = false,
     val downloadProgress: Map<String, Int> = emptyMap(),
     val downloadPending: Set<String> = emptySet(),
-    val notDownloadable: Set<String> = emptySet(),
-    val error: String? = null
+    val error: String? = null,
+    val modelsDirectory: String = "",
+    val linkingModelId: String? = null,     // model currently awaiting file pick
+    val localFiles: List<String> = emptyList()  // files in models dir for picker
 )
 
 @HiltViewModel
@@ -39,6 +41,9 @@ class ModelManagerViewModel @Inject constructor(
     val uiState: StateFlow<ModelManagerUiState> = _uiState.asStateFlow()
 
     init {
+        val modelsDir = modelRepository.getModelsDirectory()
+        _uiState.update { it.copy(modelsDirectory = modelsDir.absolutePath) }
+
         modelRepository.getAllModels()
             .onEach { models -> _uiState.update { it.copy(models = models) } }
             .launchIn(viewModelScope)
@@ -57,22 +62,44 @@ class ModelManagerViewModel @Inject constructor(
                 downloadModelUseCase(modelId)
                 observeDownloadProgress(modelId)
             } catch (e: Exception) {
-                val msg = e.message ?: "Download failed"
-                if (msg.contains("No downloadable model file")) {
-                    _uiState.update {
-                        it.copy(
-                            notDownloadable = it.notDownloadable + modelId,
-                            downloadPending = it.downloadPending - modelId
-                        )
-                    }
-                } else {
-                    _uiState.update {
-                        it.copy(
-                            error = msg,
-                            downloadPending = it.downloadPending - modelId
-                        )
-                    }
+                _uiState.update {
+                    it.copy(
+                        error = e.message ?: "Download failed",
+                        downloadPending = it.downloadPending - modelId
+                    )
                 }
+            }
+        }
+    }
+
+    /** Begin local-file linking flow: show the file picker for this model. */
+    fun startLinkLocal(modelId: String) {
+        val dir = modelRepository.getModelsDirectory()
+        val files = dir.listFiles()
+            ?.filter { it.extension.lowercase() in listOf("gguf", "ggml", "task") }
+            ?.map { it.absolutePath }
+            ?: emptyList()
+        _uiState.update { it.copy(linkingModelId = modelId, localFiles = files) }
+    }
+
+    fun cancelLinkLocal() {
+        _uiState.update { it.copy(linkingModelId = null, localFiles = emptyList()) }
+    }
+
+    fun confirmLinkLocal(filePath: String) {
+        val modelId = _uiState.value.linkingModelId ?: return
+        viewModelScope.launch {
+            val conflict = modelRepository.linkLocalFile(modelId, filePath)
+            if (conflict != null) {
+                _uiState.update {
+                    it.copy(
+                        error = "File already linked to \"$conflict\"",
+                        linkingModelId = null,
+                        localFiles = emptyList()
+                    )
+                }
+            } else {
+                _uiState.update { it.copy(linkingModelId = null, localFiles = emptyList()) }
             }
         }
     }

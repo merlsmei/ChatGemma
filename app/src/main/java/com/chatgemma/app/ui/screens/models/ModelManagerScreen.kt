@@ -1,5 +1,7 @@
 package com.chatgemma.app.ui.screens.models
 
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -8,6 +10,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -20,9 +23,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.content.FileProvider
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.chatgemma.app.domain.model.ModelVersion
@@ -90,12 +96,23 @@ fun ModelManagerScreen(
     val downloadedGroups = remember(downloaded) { downloaded.toGenerationGroups() }
     val availableGroups  = remember(available)  { available.toGenerationGroups() }
 
+    val ctx = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
     LaunchedEffect(state.error) {
         state.error?.let {
             snackbarHostState.showSnackbar(it)
             viewModel.dismissError()
         }
+    }
+
+    // File picker dialog for local model linking
+    if (state.linkingModelId != null) {
+        LocalFilePickerDialog(
+            files = state.localFiles,
+            modelsDir = state.modelsDirectory,
+            onSelect = viewModel::confirmLinkLocal,
+            onDismiss = viewModel::cancelLinkLocal
+        )
     }
 
     Scaffold(
@@ -109,6 +126,31 @@ fun ModelManagerScreen(
                     }
                 },
                 actions = {
+                    IconButton(onClick = {
+                        val dir = java.io.File(state.modelsDirectory)
+                        dir.mkdirs()
+                        try {
+                            val uri = FileProvider.getUriForFile(
+                                ctx, "${ctx.packageName}.fileprovider", dir
+                            )
+                            ctx.startActivity(
+                                Intent(Intent.ACTION_VIEW).setDataAndType(uri, "resource/folder")
+                                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            )
+                        } catch (_: Exception) {
+                            // Fallback: open generic file manager
+                            try {
+                                ctx.startActivity(
+                                    Intent(Intent.ACTION_VIEW).setDataAndType(
+                                        Uri.parse("content://com.android.externalstorage.documents/document/primary:Android%2Fdata"),
+                                        "vnd.android.document/directory"
+                                    )
+                                )
+                            } catch (_: Exception) { /* no file manager available */ }
+                        }
+                    }) {
+                        Icon(Icons.Default.FolderOpen, "Open models folder")
+                    }
                     if (state.isCheckingUpdates) {
                         CircularProgressIndicator(
                             modifier = Modifier
@@ -160,6 +202,12 @@ fun ModelManagerScreen(
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
                             )
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                "Models folder: ${state.modelsDirectory}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.6f)
+                            )
                         }
                     }
                 }
@@ -201,10 +249,10 @@ fun ModelManagerScreen(
                             model = model,
                             downloadProgress = state.downloadProgress[model.id],
                             downloadPending = model.id in state.downloadPending,
-                            notDownloadable = model.id in state.notDownloadable,
                             onDownload  = { viewModel.downloadModel(model.id) },
                             onActivate  = { viewModel.setActiveModel(model.id) },
-                            onDelete    = { viewModel.deleteModel(model.id) }
+                            onDelete    = { viewModel.deleteModel(model.id) },
+                            onLinkLocal = { viewModel.startLinkLocal(model.id) }
                         )
                     }
                 }
@@ -229,10 +277,10 @@ fun ModelManagerScreen(
                             model = model,
                             downloadProgress = state.downloadProgress[model.id],
                             downloadPending = model.id in state.downloadPending,
-                            notDownloadable = model.id in state.notDownloadable,
                             onDownload  = { viewModel.downloadModel(model.id) },
                             onActivate  = { viewModel.setActiveModel(model.id) },
-                            onDelete    = { viewModel.deleteModel(model.id) }
+                            onDelete    = { viewModel.deleteModel(model.id) },
+                            onLinkLocal = { viewModel.startLinkLocal(model.id) }
                         )
                     }
                 }
@@ -269,10 +317,10 @@ fun ModelCard(
     model: ModelVersion,
     downloadProgress: Int?,
     downloadPending: Boolean = false,
-    notDownloadable: Boolean = false,
     onDownload: () -> Unit,
     onActivate: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onLinkLocal: () -> Unit = {}
 ) {
     var showDeleteConfirm by remember { mutableStateOf(false) }
 
@@ -388,19 +436,31 @@ fun ModelCard(
 
             Spacer(Modifier.height(10.dp))
 
-            // Row 4: action buttons / progress bar
+            // Row 4: HuggingFace URL (for undownloaded models)
+            if (!model.isDownloaded && model.downloadUrl.isNotBlank()) {
+                val linkCtx = LocalContext.current
+                Text(
+                    text = model.downloadUrl,
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        textDecoration = TextDecoration.Underline
+                    ),
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.clickable {
+                        linkCtx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(model.downloadUrl)))
+                    }
+                )
+                Spacer(Modifier.height(6.dp))
+            }
+
+            // Row 5: action buttons / progress bar
             Row(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 if (!model.isDownloaded) {
-                    if (notDownloadable) {
-                        Text(
-                            "Format not supported (no GGUF/.task file)",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
-                        )
-                    } else if (downloadProgress != null) {
+                    if (downloadProgress != null) {
                         DownloadProgressButton(progress = downloadProgress)
                     } else if (downloadPending) {
                         DownloadProgressButton(progress = 0, preparing = true)
@@ -409,6 +469,11 @@ fun ModelCard(
                             Icon(Icons.Default.Download, null, modifier = Modifier.size(16.dp))
                             Spacer(Modifier.width(4.dp))
                             Text("Download")
+                        }
+                        OutlinedButton(onClick = onLinkLocal) {
+                            Icon(Icons.Default.FolderOpen, null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Load Local")
                         }
                     }
                 } else {
@@ -522,4 +587,61 @@ private fun DownloadProgressButton(
             fontWeight = FontWeight.SemiBold
         )
     }
+}
+
+// ── Local file picker dialog ─────────────────────────────────────────────────
+
+@Composable
+private fun LocalFilePickerDialog(
+    files: List<String>,
+    modelsDir: String,
+    onSelect: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Select a model file") },
+        text = {
+            if (files.isEmpty()) {
+                Column {
+                    Text("No .gguf or .task files found in the models folder.")
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Place model files in:\n$modelsDir",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    )
+                }
+            } else {
+                Column {
+                    Text(
+                        "Files in $modelsDir:",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    files.forEach { path ->
+                        val fileName = path.substringAfterLast("/")
+                        TextButton(
+                            onClick = { onSelect(path) },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Default.InsertDriveFile, null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                fileName,
+                                modifier = Modifier.weight(1f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
 }

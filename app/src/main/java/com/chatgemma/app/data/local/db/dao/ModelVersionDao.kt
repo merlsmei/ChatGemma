@@ -47,4 +47,7 @@ interface ModelVersionDao {
 
     @Query("SELECT MAX(lastChecked) FROM model_versions")
     suspend fun getLastCheckedTime(): Long?
+
+    @Query("SELECT * FROM model_versions WHERE localPath = :path LIMIT 1")
+    suspend fun getModelByLocalPath(path: String): ModelVersionEntity?
 }

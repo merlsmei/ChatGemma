@@ -46,6 +46,10 @@ class ModelDownloadWorker @AssistedInject constructor(
             }
             modelRepository.markDownloaded(modelId, localPath)
             Result.success(workDataOf(KEY_LOCAL_PATH to localPath))
+        } catch (e: java.io.IOException) {
+            // Network errors are transient — retry (partial file is kept for resume)
+            if (runAttemptCount < 5) Result.retry()
+            else Result.failure(workDataOf(KEY_ERROR to "Download failed after retries: ${e.message}"))
         } catch (e: Exception) {
             Result.failure(workDataOf(KEY_ERROR to (e.message ?: "Unknown error")))
         }
@@ -62,10 +66,18 @@ class ModelDownloadWorker @AssistedInject constructor(
         val fileName = "${modelId.replace("/", "_")}.$ext"
         val destFile = File(modelsDir, fileName)
 
-        val request = Request.Builder().url(url).build()
-        val response = okHttpClient.newCall(request).execute()
+        // Resume: check for existing partial download
+        val existingBytes = if (destFile.exists()) destFile.length() else 0L
 
-        if (!response.isSuccessful) error("HTTP ${response.code}: ${response.message}")
+        val requestBuilder = Request.Builder().url(url)
+        if (existingBytes > 0L) {
+            requestBuilder.header("Range", "bytes=$existingBytes-")
+        }
+        val response = okHttpClient.newCall(requestBuilder.build()).execute()
+
+        if (!response.isSuccessful && response.code != 206) {
+            error("HTTP ${response.code}: ${response.message}")
+        }
 
         val contentType = response.header("Content-Type", "") ?: ""
         if (contentType.contains("text/html", ignoreCase = true)) {
@@ -74,12 +86,20 @@ class ModelDownloadWorker @AssistedInject constructor(
         }
 
         val body = response.body ?: error("Empty response body")
-        val totalBytes = body.contentLength()
+
+        // If server returned 200 (ignoring Range), start fresh; 206 means partial content
+        val isResuming = response.code == 206 && existingBytes > 0L
+        val totalBytes = if (isResuming) {
+            body.contentLength().let { cl -> if (cl > 0L) cl + existingBytes else -1L }
+        } else {
+            if (existingBytes > 0L) destFile.delete() // server doesn't support Range, restart
+            body.contentLength()
+        }
 
         body.byteStream().use { input ->
-            FileOutputStream(destFile).use { output ->
-                val buffer = ByteArray(8 * 1024)
-                var downloaded = 0L
+            FileOutputStream(destFile, /* append = */ isResuming).use { output ->
+                val buffer = ByteArray(64 * 1024)
+                var downloaded = if (isResuming) existingBytes else 0L
                 var read: Int
                 while (input.read(buffer).also { read = it } != -1) {
                     output.write(buffer, 0, read)

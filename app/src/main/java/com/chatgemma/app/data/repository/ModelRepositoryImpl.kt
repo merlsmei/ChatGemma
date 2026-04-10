@@ -1,9 +1,13 @@
 package com.chatgemma.app.data.repository
 
 import android.content.Context
+import androidx.work.BackoffPolicy
 import androidx.work.Data
+import androidx.work.NetworkType
+import androidx.work.Constraints
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
+import java.util.concurrent.TimeUnit
 import com.chatgemma.app.data.local.db.dao.ModelVersionDao
 import com.chatgemma.app.data.local.entity.ModelVersionEntity
 import com.chatgemma.app.data.remote.api.HuggingFaceApi
@@ -235,28 +239,59 @@ class ModelRepositoryImpl @Inject constructor(
 
     // ── Download / delete ───────────────────────────────────────────────────
 
+    /** Pick the best downloadable file from a sibling list (Q4_K_M GGUF preferred). */
+    private fun findDownloadableFile(siblings: List<com.chatgemma.app.data.remote.dto.HfSibling>): com.chatgemma.app.data.remote.dto.HfSibling? =
+        siblings.firstOrNull { it.rfilename.contains("Q4_K_M", ignoreCase = true) && it.rfilename.endsWith(".gguf") }
+            ?: siblings.firstOrNull { it.rfilename.contains("Q4_0",   ignoreCase = true) && it.rfilename.endsWith(".gguf") }
+            ?: siblings.firstOrNull { it.rfilename.contains("Q4",     ignoreCase = true) && it.rfilename.endsWith(".gguf") }
+            ?: siblings.firstOrNull { it.rfilename.contains("Q5_K_M", ignoreCase = true) && it.rfilename.endsWith(".gguf") }
+            ?: siblings.firstOrNull { it.rfilename.endsWith(".gguf") }
+            ?: siblings.firstOrNull { it.rfilename.endsWith(".task") }
+
+    /**
+     * Search HuggingFace for a community GGUF conversion of the given model.
+     * Returns (communityModelId, sibling) or null if none found.
+     */
+    private suspend fun findCommunityGguf(modelId: String): Pair<String, com.chatgemma.app.data.remote.dto.HfSibling>? {
+        val baseName = modelId.substringAfterLast("/")
+        val results = try {
+            huggingFaceApi.searchModels(
+                search = "$baseName gguf",
+                sort = "downloads",
+                limit = 5
+            )
+        } catch (_: Exception) { return null }
+
+        for (dto in results) {
+            if (dto.modelId == modelId) continue          // skip the original
+            val info = try { huggingFaceApi.getModelFiles(dto.modelId) } catch (_: Exception) { continue }
+            val file = findDownloadableFile(info.siblings)
+            if (file != null) return dto.modelId to file
+        }
+        return null
+    }
+
     override suspend fun enqueueDownload(modelId: String) {
         withContext(Dispatchers.IO) {
-            // Fetch the model's file list to find the actual .task file URL
+            // Fetch the model's file list to find a downloadable file
             val modelInfo = try {
                 huggingFaceApi.getModelFiles(modelId)
             } catch (e: Exception) {
                 throw IllegalStateException("Could not fetch model file list: ${e.message}")
             }
 
-            // Prefer Q4_K_M GGUF for best mobile quality/size trade-off, then any GGUF, then .task
-            val modelFile = modelInfo.siblings.let { siblings ->
-                siblings.firstOrNull { it.rfilename.contains("Q4_K_M", ignoreCase = true) && it.rfilename.endsWith(".gguf") }
-                    ?: siblings.firstOrNull { it.rfilename.contains("Q4_0",   ignoreCase = true) && it.rfilename.endsWith(".gguf") }
-                    ?: siblings.firstOrNull { it.rfilename.contains("Q4",     ignoreCase = true) && it.rfilename.endsWith(".gguf") }
-                    ?: siblings.firstOrNull { it.rfilename.contains("Q5_K_M", ignoreCase = true) && it.rfilename.endsWith(".gguf") }
-                    ?: siblings.firstOrNull { it.rfilename.endsWith(".gguf") }
-                    ?: siblings.firstOrNull { it.rfilename.endsWith(".task") }
-            } ?: throw IllegalStateException(
-                "No downloadable model file (.gguf or .task) found for \"$modelId\"."
-            )
+            // Try the original repo first, then fall back to community GGUF conversions
+            val directFile = findDownloadableFile(modelInfo.siblings)
+            val (downloadRepoId, downloadFile) = if (directFile != null) {
+                modelId to directFile
+            } else {
+                findCommunityGguf(modelId)
+                    ?: throw IllegalStateException(
+                        "No downloadable model file (.gguf or .task) found for \"$modelId\"."
+                    )
+            }
 
-            val downloadUrl = "https://huggingface.co/$modelId/resolve/main/${modelFile.rfilename}"
+            val downloadUrl = "https://huggingface.co/$downloadRepoId/resolve/main/${downloadFile.rfilename}"
 
             modelVersionDao.getModelById(modelId) ?: return@withContext
 
@@ -265,9 +300,15 @@ class ModelRepositoryImpl @Inject constructor(
                 .putString(ModelDownloadWorker.KEY_DOWNLOAD_URL, downloadUrl)
                 .build()
 
+            val constraints = Constraints.Builder()
+                .setRequiredNetworkType(NetworkType.CONNECTED)
+                .build()
+
             val request = OneTimeWorkRequestBuilder<ModelDownloadWorker>()
                 .setInputData(inputData)
                 .addTag("download_$modelId")
+                .setConstraints(constraints)
+                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
                 .build()
 
             WorkManager.getInstance(context).enqueue(request)
@@ -282,6 +323,24 @@ class ModelRepositoryImpl @Inject constructor(
 
     override suspend fun markDownloaded(modelId: String, localPath: String) {
         modelVersionDao.markDownloaded(modelId, localPath, System.currentTimeMillis())
+    }
+
+    override fun getModelsDirectory(): File {
+        return File(context.getExternalFilesDir(null) ?: context.filesDir, "models")
+            .also { it.mkdirs() }
+    }
+
+    /**
+     * Link a local file to a model. Returns null on success, or the display name
+     * of the model already using that file.
+     */
+    override suspend fun linkLocalFile(modelId: String, filePath: String): String? {
+        val existing = modelVersionDao.getModelByLocalPath(filePath)
+        if (existing != null && existing.id != modelId) {
+            return existing.displayName
+        }
+        modelVersionDao.markDownloaded(modelId, filePath, System.currentTimeMillis())
+        return null
     }
 
     // ── Mappers ─────────────────────────────────────────────────────────────
