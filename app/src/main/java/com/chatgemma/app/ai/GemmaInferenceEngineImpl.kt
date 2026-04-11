@@ -54,13 +54,7 @@ class GemmaInferenceEngineImpl @Inject constructor(
         val engine = llmInference ?: throw IllegalStateException("Gemma engine not initialized")
         _isGenerating.value = true
         try {
-            val fullPrompt = if (images.isNotEmpty()) {
-                val imageNote = images.joinToString("\n") { "[Attached image: ${it.width}×${it.height}px]" }
-                "$imageNote\n$prompt"
-            } else {
-                prompt
-            }
-            emit(withContext(Dispatchers.IO) { engine.generateResponse(fullPrompt) })
+            emit(withContext(Dispatchers.IO) { engine.generateResponse(prompt) })
         } finally {
             _isGenerating.value = false
         }
@@ -74,13 +68,7 @@ class GemmaInferenceEngineImpl @Inject constructor(
         val engine = llmInference ?: error("Gemma engine not initialized")
         _isGenerating.value = true
         try {
-            val fullPrompt = if (images.isNotEmpty()) {
-                val imageNote = images.joinToString("\n") { "[Attached image: ${it.width}×${it.height}px]" }
-                "$imageNote\n$prompt"
-            } else {
-                prompt
-            }
-            engine.generateResponse(fullPrompt)
+            engine.generateResponse(prompt)
         } finally {
             _isGenerating.value = false
         }

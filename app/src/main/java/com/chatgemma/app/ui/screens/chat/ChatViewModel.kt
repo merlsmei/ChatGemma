@@ -189,15 +189,17 @@ class ChatViewModel @Inject constructor(
                     .catch { e -> _uiState.update { it.copy(error = e.message, isGenerating = false) } }
                     .collect { partial ->
                         accumulated.append(partial)
-                        _uiState.update { it.copy(streamingText = accumulated.toString()) }
+                        _uiState.update { it.copy(streamingText = stripControlTokens(accumulated.toString())) }
                     }
+
+                val cleanResponse = stripControlTokens(accumulated.toString())
 
                 val modelMessage = Message(
                     id = UUID.randomUUID().toString(),
                     sessionId = sessionId,
                     branchId = branchId,
                     role = "model",
-                    textContent = accumulated.toString(),
+                    textContent = cleanResponse,
                     createdAt = System.currentTimeMillis(),
                     tokenCount = (accumulated.length / 4).coerceAtLeast(1),
                     inferenceParamsJson = gson.toJson(state.inferenceParams)
@@ -215,7 +217,7 @@ class ChatViewModel @Inject constructor(
 
                 // Auto-speak if enabled
                 if (_uiState.value.isAutoSpeaking) {
-                    speechService.speak(accumulated.toString())
+                    speechService.speak(cleanResponse)
                 }
 
                 // Background auto-tag
@@ -324,6 +326,13 @@ class ChatViewModel @Inject constructor(
             )
         }
     }
+
+    private fun stripControlTokens(text: String): String =
+        text.replace("<end_of_turn>", "")
+            .replace("<start_of_turn>", "")
+            .replace("<eos>", "")
+            .replace("<bos>", "")
+            .trim()
 
     private fun uriToBitmap(uri: Uri): Bitmap? {
         return try {

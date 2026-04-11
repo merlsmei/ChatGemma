@@ -69,7 +69,7 @@ class LlamaCppInferenceEngine @Inject constructor() : GemmaInferenceEngine {
         _isGenerating.value = true
         try {
             val result = withContext(Dispatchers.IO) {
-                nativeGenerate(h, buildGemmaPrompt(prompt, images),
+                nativeGenerate(h, prompt,
                     params.maxTokens, params.temperature, params.topP)
             }
             emit(result)
@@ -84,7 +84,7 @@ class LlamaCppInferenceEngine @Inject constructor() : GemmaInferenceEngine {
         val h = modelHandle.takeIf { it != 0L } ?: error("Model not loaded")
         _isGenerating.value = true
         try {
-            nativeGenerate(h, buildGemmaPrompt(prompt, images),
+            nativeGenerate(h, prompt,
                 params.maxTokens, params.temperature, params.topP)
         } finally {
             _isGenerating.value = false
@@ -108,14 +108,6 @@ class LlamaCppInferenceEngine @Inject constructor() : GemmaInferenceEngine {
         } else {
             (text.length / 4).coerceAtLeast(1)
         }
-    }
-
-    /** Format prompt using Gemma chat template. */
-    private fun buildGemmaPrompt(text: String, images: List<Bitmap>): String {
-        val imageNote = if (images.isNotEmpty())
-            images.joinToString("\n") { "[Image: ${it.width}×${it.height}px]" } + "\n"
-        else ""
-        return "<start_of_turn>user\n$imageNote$text<end_of_turn>\n<start_of_turn>model\n"
     }
 
     // ── JNI declarations ────────────────────────────────────────────────────
