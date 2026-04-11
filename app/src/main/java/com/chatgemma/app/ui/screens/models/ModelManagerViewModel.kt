@@ -114,11 +114,14 @@ class ModelManagerViewModel @Inject constructor(
                         val progress = workInfo.progress.getInt(
                             ModelDownloadWorker.KEY_PROGRESS, 0
                         )
-                        _uiState.update {
-                            it.copy(
-                                downloadProgress = it.downloadProgress + (modelId to progress),
-                                downloadPending = it.downloadPending - modelId
-                            )
+                        val current = _uiState.value.downloadProgress[modelId]
+                        if (current != progress || modelId in _uiState.value.downloadPending) {
+                            _uiState.update {
+                                it.copy(
+                                    downloadProgress = it.downloadProgress + (modelId to progress),
+                                    downloadPending = it.downloadPending - modelId
+                                )
+                            }
                         }
                     }
                     WorkInfo.State.SUCCEEDED -> {

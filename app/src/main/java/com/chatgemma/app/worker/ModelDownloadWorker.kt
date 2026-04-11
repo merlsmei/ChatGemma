@@ -20,13 +20,14 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
 import java.io.FileOutputStream
+import javax.inject.Named
 
 @HiltWorker
 class ModelDownloadWorker @AssistedInject constructor(
     @Assisted private val context: Context,
     @Assisted params: WorkerParameters,
     private val modelRepository: ModelRepository,
-    private val okHttpClient: OkHttpClient
+    @Named("download") private val okHttpClient: OkHttpClient
 ) : CoroutineWorker(context, params) {
 
     override suspend fun getForegroundInfo(): ForegroundInfo =
@@ -101,12 +102,16 @@ class ModelDownloadWorker @AssistedInject constructor(
                 val buffer = ByteArray(64 * 1024)
                 var downloaded = if (isResuming) existingBytes else 0L
                 var read: Int
+                var lastReportedProgress = -1
                 while (input.read(buffer).also { read = it } != -1) {
                     output.write(buffer, 0, read)
                     downloaded += read
                     if (totalBytes > 0) {
                         val progress = ((downloaded * 100) / totalBytes).toInt()
-                        onProgress(progress)
+                        if (progress != lastReportedProgress) {
+                            lastReportedProgress = progress
+                            onProgress(progress)
+                        }
                     }
                 }
             }
