@@ -35,11 +35,27 @@ class LlamaCppInferenceEngine @Inject constructor() : GemmaInferenceEngine {
             if (!available) throw IllegalStateException(
                 "llama.cpp native library not available on this build."
             )
+
+            // Validate file before JNI call for better error messages
+            val file = java.io.File(modelPath)
+            if (!file.exists()) throw IllegalStateException(
+                "Model file not found: $modelPath\nRe-download the model from Model Manager."
+            )
+            if (!file.canRead()) throw IllegalStateException(
+                "Model file not readable: $modelPath\nCheck storage permissions."
+            )
+            if (file.length() < 1_024 * 1_024) throw IllegalStateException(
+                "Model file too small (${file.length()} bytes): $modelPath\nFile may be corrupted. Delete and re-download."
+            )
+
             nativeInit()
             val nCtx     = params.maxTokens.coerceIn(512, 8192)
             val nThreads = Runtime.getRuntime().availableProcessors().coerceAtMost(8)
             val handle = nativeLoadModel(modelPath, nCtx, nThreads)
-            if (handle == 0L) throw IllegalStateException("Failed to load model: $modelPath")
+            if (handle == 0L) throw IllegalStateException(
+                "llama.cpp could not load $modelPath (${"%.1f".format(file.length() / (1024f * 1024f))} MB). " +
+                "The model format may be unsupported. Try a different GGUF quantization."
+            )
             modelHandle = handle
             _isReady.value = true
         }
