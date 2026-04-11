@@ -166,7 +166,8 @@ class ChatViewModel @Inject constructor(
                 attachedImages = emptyList(),
                 attachedVideoUri = null,
                 isGenerating = true,
-                streamingText = ""
+                streamingText = "",
+                messages = it.messages + userMessage
             )
         }
 
@@ -180,8 +181,17 @@ class ChatViewModel @Inject constructor(
                     bitmaps.addAll(frames)
                 }
 
+                // Build prompt with image descriptions so the model knows what's attached
+                val imageDesc = bitmaps.mapIndexed { i, bmp ->
+                    "[Image ${i + 1}: ${bmp.width}x${bmp.height}px]"
+                }.joinToString("\n")
+                val promptUserMessage = if (imageDesc.isNotEmpty()) {
+                    userMessage.copy(textContent = "$imageDesc\n${userMessage.textContent ?: ""}")
+                } else {
+                    userMessage
+                }
                 val prompt = PromptBuilder.buildChatPrompt(
-                    messageCache + userMessage
+                    messageCache + promptUserMessage
                 )
 
                 val accumulated = StringBuilder()
@@ -211,7 +221,7 @@ class ChatViewModel @Inject constructor(
                     it.copy(
                         isGenerating = false,
                         streamingText = "",
-                        messages = it.messages + userMessage + modelMessage
+                        messages = it.messages + modelMessage
                     )
                 }
 

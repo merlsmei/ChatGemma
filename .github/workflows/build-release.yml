@@ -60,7 +60,7 @@ jobs:
           git clone --depth=1 https://github.com/ggerganov/llama.cpp.git llama_src
           echo "llama.cpp HEAD: $(git -C llama_src rev-parse --short HEAD)"
 
-          # ── CMake configure (CPU-only, shared lib, no tests/examples) ───────
+          # ── CMake configure (Vulkan GPU, shared lib, no tests/examples) ────
           cmake \
             -S llama_src -B llama_build \
             -DCMAKE_TOOLCHAIN_FILE="$NDK_ROOT/build/cmake/android.toolchain.cmake" \
@@ -73,7 +73,7 @@ jobs:
             -DLLAMA_BUILD_SERVER=OFF \
             -DGGML_METAL=OFF \
             -DGGML_CUDA=OFF \
-            -DGGML_VULKAN=OFF \
+            -DGGML_VULKAN=ON \
             -DGGML_OPENMP=OFF
 
           # ── Build ──────────────────────────────────────────────────────────

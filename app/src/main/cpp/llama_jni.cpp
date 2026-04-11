@@ -30,7 +30,7 @@ Java_com_chatgemma_app_ai_LlamaCppInferenceEngine_nativeLoadModel(
 
     const char* path = env->GetStringUTFChars(jPath, nullptr);
     llama_model_params mp = llama_model_default_params();
-    mp.n_gpu_layers = 0;  // CPU-only on Android
+    mp.n_gpu_layers = 99;  // Offload all layers to GPU (Vulkan) when available
 
     llama_model* model = llama_model_load_from_file(path, mp);
     env->ReleaseStringUTFChars(jPath, path);
