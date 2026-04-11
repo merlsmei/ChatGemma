@@ -475,6 +475,14 @@ fun ModelCard(
                             Spacer(Modifier.width(4.dp))
                             Text("Load Local")
                         }
+                        // Delete corrupted/partial file
+                        IconButton(onClick = { showDeleteConfirm = true }) {
+                            Icon(
+                                Icons.Default.Delete, "Delete file",
+                                tint = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
                     }
                 } else {
                     if (!model.isActive) {

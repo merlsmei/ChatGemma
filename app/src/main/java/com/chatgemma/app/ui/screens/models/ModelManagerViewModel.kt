@@ -53,6 +53,32 @@ class ModelManagerViewModel @Inject constructor(
             val cached = modelRepository.getAllModels().first()
             if (cached.isEmpty()) checkForUpdates()
         }
+
+        // Re-observe any in-progress downloads (survives navigation away and back)
+        resumeActiveDownloads()
+    }
+
+    private val observedModelIds = mutableSetOf<String>()
+
+    private fun resumeActiveDownloads() {
+        val workManager = WorkManager.getInstance(context)
+        viewModelScope.launch {
+            // Wait for models to load, then check for active downloads
+            modelRepository.getAllModels().first { it.isNotEmpty() }.forEach { model ->
+                if (model.id !in observedModelIds) {
+                    val workInfos = workManager.getWorkInfosByTagFlow("download_${model.id}")
+                        .first()
+                    val isActive = workInfos.any {
+                        it.state == WorkInfo.State.RUNNING ||
+                        it.state == WorkInfo.State.ENQUEUED ||
+                        it.state == WorkInfo.State.BLOCKED
+                    }
+                    if (isActive) {
+                        observeDownloadProgress(model.id)
+                    }
+                }
+            }
+        }
     }
 
     fun downloadModel(modelId: String) {
@@ -105,6 +131,7 @@ class ModelManagerViewModel @Inject constructor(
     }
 
     private fun observeDownloadProgress(modelId: String) {
+        if (!observedModelIds.add(modelId)) return  // already observing
         val workManager = WorkManager.getInstance(context)
         workManager.getWorkInfosByTagFlow("download_$modelId")
             .onEach { workInfos ->
@@ -125,6 +152,7 @@ class ModelManagerViewModel @Inject constructor(
                         }
                     }
                     WorkInfo.State.SUCCEEDED -> {
+                        observedModelIds.remove(modelId)
                         _uiState.update {
                             it.copy(
                                 downloadProgress = it.downloadProgress - modelId,
@@ -133,6 +161,7 @@ class ModelManagerViewModel @Inject constructor(
                         }
                     }
                     WorkInfo.State.FAILED -> {
+                        observedModelIds.remove(modelId)
                         val errorMsg = workInfo.outputData.getString(
                             ModelDownloadWorker.KEY_ERROR
                         ) ?: "Download failed"
@@ -145,6 +174,7 @@ class ModelManagerViewModel @Inject constructor(
                         }
                     }
                     WorkInfo.State.CANCELLED -> {
+                        observedModelIds.remove(modelId)
                         _uiState.update {
                             it.copy(
                                 downloadProgress = it.downloadProgress - modelId,
