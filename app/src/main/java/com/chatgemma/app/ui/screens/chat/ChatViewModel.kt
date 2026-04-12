@@ -328,8 +328,10 @@ class ChatViewModel @Inject constructor(
     }
 
     fun updateInferenceParams(params: InferenceParams) {
+        val gpuChanged = params.gpuLayers != _uiState.value.inferenceParams.gpuLayers
         _uiState.update { it.copy(inferenceParams = params) }
         viewModelScope.launch { appPreferences.saveInferenceParams(params) }
+        if (gpuChanged) loadModel()
     }
 
     fun dismissError() {
