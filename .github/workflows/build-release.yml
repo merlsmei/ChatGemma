@@ -61,14 +61,18 @@ jobs:
           echo "llama.cpp HEAD: $(git -C llama_src rev-parse --short HEAD)"
 
           # ── Ensure glslc is on PATH (needed for Vulkan shader compilation) ─
+          # Try NDK shader-tools first, then system package
           SHADER_TOOLS="$NDK_ROOT/shader-tools/linux-x86_64"
-          if [ -d "$SHADER_TOOLS" ]; then
+          if [ -x "$SHADER_TOOLS/glslc" ]; then
             export PATH="$SHADER_TOOLS:$PATH"
-            echo "glslc: $(which glslc)"
           else
-            echo "WARNING: NDK shader-tools not found, installing glslc via apt"
-            sudo apt-get update -qq && sudo apt-get install -y -qq glslc
+            sudo apt-get update -qq && sudo apt-get install -y -qq glslc shaderc 2>/dev/null \
+              || sudo apt-get install -y -qq glslang-tools 2>/dev/null || true
           fi
+          echo "glslc path: $(which glslc 2>/dev/null || echo 'NOT FOUND')"
+
+          # Vulkan headers for Android cross-compilation
+          VULKAN_INCLUDE="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include"
 
           # ── CMake configure (Vulkan GPU, shared lib, no tests/examples) ────
           cmake \
@@ -84,7 +88,9 @@ jobs:
             -DGGML_METAL=OFF \
             -DGGML_CUDA=OFF \
             -DGGML_VULKAN=ON \
-            -DGGML_OPENMP=OFF
+            -DGGML_OPENMP=OFF \
+            -DVulkan_INCLUDE_DIR="$VULKAN_INCLUDE" \
+            -DVulkan_LIBRARY="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/26/libvulkan.so"
 
           # ── Build ──────────────────────────────────────────────────────────
           cmake --build llama_build -j$(nproc)
