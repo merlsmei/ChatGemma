@@ -8,6 +8,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -18,6 +20,7 @@ class LlamaCppInferenceEngine @Inject constructor() : GemmaInferenceEngine {
     private var modelHandle: Long = 0L
     private val _isReady = MutableStateFlow(false)
     private val _isGenerating = MutableStateFlow(false)
+    private val inferenceMutex = Mutex()
 
     override val isReady: StateFlow<Boolean> = _isReady.asStateFlow()
     override val isGenerating: StateFlow<Boolean> = _isGenerating.asStateFlow()
@@ -66,26 +69,30 @@ class LlamaCppInferenceEngine @Inject constructor() : GemmaInferenceEngine {
     ): Flow<String> = flow {
         val h = modelHandle.takeIf { it != 0L }
             ?: throw IllegalStateException("Model not loaded")
-        _isGenerating.value = true
-        try {
-            val result = withContext(Dispatchers.IO) {
-                nativeGenerate(h, prompt,
-                    params.maxTokens, params.temperature, params.topP)
+        inferenceMutex.withLock {
+            _isGenerating.value = true
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    nativeGenerate(h, prompt,
+                        params.maxTokens, params.temperature, params.topP)
+                }
+                emit(result)
+            } finally {
+                _isGenerating.value = false
             }
-            emit(result)
-        } finally {
-            _isGenerating.value = false
         }
     }
 
     override suspend fun generateFull(
         prompt: String, images: List<Bitmap>, params: InferenceParams
-    ): String = withContext(Dispatchers.IO) {
+    ): String = inferenceMutex.withLock {
         val h = modelHandle.takeIf { it != 0L } ?: error("Model not loaded")
         _isGenerating.value = true
         try {
-            nativeGenerate(h, prompt,
-                params.maxTokens, params.temperature, params.topP)
+            withContext(Dispatchers.IO) {
+                nativeGenerate(h, prompt,
+                    params.maxTokens, params.temperature, params.topP)
+            }
         } finally {
             _isGenerating.value = false
         }

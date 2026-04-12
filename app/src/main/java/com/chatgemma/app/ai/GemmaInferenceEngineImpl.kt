@@ -11,6 +11,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -23,6 +25,7 @@ class GemmaInferenceEngineImpl @Inject constructor(
     private var llmInference: LlmInference? = null
     private val _isReady = MutableStateFlow(false)
     private val _isGenerating = MutableStateFlow(false)
+    private val inferenceMutex = Mutex()
 
     override val isReady: StateFlow<Boolean> = _isReady.asStateFlow()
     override val isGenerating: StateFlow<Boolean> = _isGenerating.asStateFlow()
@@ -52,11 +55,13 @@ class GemmaInferenceEngineImpl @Inject constructor(
         params: InferenceParams
     ): Flow<String> = flow {
         val engine = llmInference ?: throw IllegalStateException("Gemma engine not initialized")
-        _isGenerating.value = true
-        try {
-            emit(withContext(Dispatchers.IO) { engine.generateResponse(prompt) })
-        } finally {
-            _isGenerating.value = false
+        inferenceMutex.withLock {
+            _isGenerating.value = true
+            try {
+                emit(withContext(Dispatchers.IO) { engine.generateResponse(prompt) })
+            } finally {
+                _isGenerating.value = false
+            }
         }
     }
 
@@ -64,11 +69,11 @@ class GemmaInferenceEngineImpl @Inject constructor(
         prompt: String,
         images: List<Bitmap>,
         params: InferenceParams
-    ): String = withContext(Dispatchers.IO) {
+    ): String = inferenceMutex.withLock {
         val engine = llmInference ?: error("Gemma engine not initialized")
         _isGenerating.value = true
         try {
-            engine.generateResponse(prompt)
+            withContext(Dispatchers.IO) { engine.generateResponse(prompt) }
         } finally {
             _isGenerating.value = false
         }

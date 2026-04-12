@@ -230,8 +230,12 @@ class ChatViewModel @Inject constructor(
                     speechService.speak(cleanResponse)
                 }
 
-                // Background auto-tag
-                autoTagTopicUseCase(sessionId, branchId)
+                // Background auto-tag (isolated so failures don't crash the chat)
+                viewModelScope.launch {
+                    try {
+                        autoTagTopicUseCase(sessionId, branchId)
+                    } catch (_: Exception) { }
+                }
                 updateContextUsage()
 
             } catch (e: Exception) {
@@ -358,6 +362,7 @@ class ChatViewModel @Inject constructor(
 
     override fun onCleared() {
         super.onCleared()
+        generationJob?.cancel()
         speechService.release()
     }
 }
