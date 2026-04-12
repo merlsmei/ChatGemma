@@ -71,8 +71,21 @@ jobs:
           fi
           echo "glslc path: $(which glslc 2>/dev/null || echo 'NOT FOUND')"
 
-          # Vulkan headers for Android cross-compilation
+          # ── Install Vulkan C++ headers (vulkan.hpp) for ggml-vulkan ────────
+          # NDK sysroot only ships C headers (vulkan.h); ggml-vulkan.cpp
+          # requires the C++ wrapper (vulkan.hpp). Install the system
+          # vulkan-headers package and copy .hpp files into the NDK sysroot.
+          sudo apt-get update -qq 2>/dev/null || true
+          sudo apt-get install -y -qq vulkan-headers 2>/dev/null || true
           VULKAN_INCLUDE="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include"
+          if [ -d /usr/include/vulkan ]; then
+            cp /usr/include/vulkan/*.hpp "$VULKAN_INCLUDE/vulkan/" 2>/dev/null || true
+            # vk_video headers may be referenced by vulkan.hpp
+            cp -r /usr/include/vk_video "$VULKAN_INCLUDE/" 2>/dev/null || true
+            echo "Vulkan C++ headers copied to NDK sysroot"
+          fi
+          echo "Vulkan headers in NDK sysroot:"
+          ls "$VULKAN_INCLUDE/vulkan/"vulkan*.h* 2>/dev/null | head -10
 
           # ── CMake configure (Vulkan GPU, shared lib, no tests/examples) ────
           cmake \
