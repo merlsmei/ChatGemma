@@ -7,6 +7,7 @@ import androidx.datastore.preferences.preferencesDataStore
 import com.chatgemma.app.domain.model.InferenceParams
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -61,6 +62,28 @@ class AppPreferences @Inject constructor(
         dataStore.edit { it[Keys.LAST_HF_CHECK] = time }
     }
 
+    /** Set before GPU inference starts; cleared after success. */
+    suspend fun setGpuSentinel(active: Boolean) {
+        dataStore.edit { it[Keys.GPU_SENTINEL] = active }
+    }
+
+    /**
+     * If the GPU sentinel is still set from a previous run, the app crashed
+     * during GPU inference. Reset gpuLayers to 0 and clear the sentinel.
+     * Returns true if a crash was detected and GPU was disabled.
+     */
+    suspend fun checkAndResetGpuCrash(): Boolean {
+        val prefs = dataStore.data.first()
+        if (prefs[Keys.GPU_SENTINEL] == true) {
+            dataStore.edit {
+                it[Keys.GPU_LAYERS] = 0
+                it[Keys.GPU_SENTINEL] = false
+            }
+            return true
+        }
+        return false
+    }
+
     private object Keys {
         val TEMPERATURE = floatPreferencesKey("temperature")
         val MAX_TOKENS = intPreferencesKey("max_tokens")
@@ -71,6 +94,7 @@ class AppPreferences @Inject constructor(
         val LAST_SESSION_ID = stringPreferencesKey("last_session_id")
         val LAST_BRANCH_ID = stringPreferencesKey("last_branch_id")
         val GPU_LAYERS = intPreferencesKey("gpu_layers")
+        val GPU_SENTINEL = booleanPreferencesKey("gpu_sentinel")
         val LAST_HF_CHECK = longPreferencesKey("last_hf_check")
     }
 }

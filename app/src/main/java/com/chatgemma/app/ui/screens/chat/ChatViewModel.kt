@@ -72,8 +72,23 @@ class ChatViewModel @Inject constructor(
 
     init {
         loadMessages()
-        loadModel()
+        checkGpuCrashThenLoadModel()
         observeSpeech()
+    }
+
+    private fun checkGpuCrashThenLoadModel() {
+        viewModelScope.launch {
+            val crashed = appPreferences.checkAndResetGpuCrash()
+            if (crashed) {
+                _uiState.update {
+                    it.copy(
+                        inferenceParams = it.inferenceParams.copy(gpuLayers = 0),
+                        error = "GPU acceleration crashed on last run and has been disabled."
+                    )
+                }
+            }
+            loadModel()
+        }
     }
 
     private fun loadMessages() {
@@ -199,6 +214,10 @@ class ChatViewModel @Inject constructor(
                     messageCache + promptUserMessage
                 )
 
+                // Set GPU crash sentinel before inference if GPU is active
+                val gpuActive = state.inferenceParams.gpuLayers > 0
+                if (gpuActive) appPreferences.setGpuSentinel(true)
+
                 val accumulated = StringBuilder()
                 gemmaEngine.generateStream(prompt, bitmaps, state.inferenceParams)
                     .catch { e -> _uiState.update { it.copy(error = e.message, isGenerating = false) } }
@@ -206,6 +225,9 @@ class ChatViewModel @Inject constructor(
                         accumulated.append(partial)
                         _uiState.update { it.copy(streamingText = stripControlTokens(accumulated.toString())) }
                     }
+
+                // GPU inference survived — clear the sentinel
+                if (gpuActive) appPreferences.setGpuSentinel(false)
 
                 val cleanResponse = stripControlTokens(accumulated.toString())
 
