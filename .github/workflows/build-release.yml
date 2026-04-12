@@ -115,7 +115,7 @@ jobs:
             -DGGML_VULKAN=ON \
             -DGGML_OPENMP=OFF \
             -DVulkan_INCLUDE_DIR="$VULKAN_INCLUDE" \
-            -DVulkan_LIBRARY="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/26/libvulkan.so"
+            -DVulkan_LIBRARY="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/33/libvulkan.so"
 
           # ── Build ──────────────────────────────────────────────────────────
           cmake --build llama_build -j$(nproc)
