@@ -40,7 +40,7 @@ jobs:
           path: |
             app/src/main/jniLibs/arm64-v8a
             app/src/main/cpp/llama_include
-          key: llama-cpp-android-arm64-v1-${{ hashFiles('app/src/main/cpp/llama_jni.cpp') }}
+          key: llama-cpp-android-arm64-vulkan-v2-${{ hashFiles('app/src/main/cpp/llama_jni.cpp') }}
 
       - name: Build llama.cpp for Android (arm64-v8a)
         if: steps.llama-cache.outputs.cache-hit != 'true'
@@ -59,6 +59,16 @@ jobs:
           # ── Clone llama.cpp (latest HEAD, shallow) ─────────────────────────
           git clone --depth=1 https://github.com/ggerganov/llama.cpp.git llama_src
           echo "llama.cpp HEAD: $(git -C llama_src rev-parse --short HEAD)"
+
+          # ── Ensure glslc is on PATH (needed for Vulkan shader compilation) ─
+          SHADER_TOOLS="$NDK_ROOT/shader-tools/linux-x86_64"
+          if [ -d "$SHADER_TOOLS" ]; then
+            export PATH="$SHADER_TOOLS:$PATH"
+            echo "glslc: $(which glslc)"
+          else
+            echo "WARNING: NDK shader-tools not found, installing glslc via apt"
+            sudo apt-get update -qq && sudo apt-get install -y -qq glslc
+          fi
 
           # ── CMake configure (Vulkan GPU, shared lib, no tests/examples) ────
           cmake \
