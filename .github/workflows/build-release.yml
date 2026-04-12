@@ -40,7 +40,7 @@ jobs:
           path: |
             app/src/main/jniLibs/arm64-v8a
             app/src/main/cpp/llama_include
-          key: llama-cpp-android-arm64-vulkan-v2-${{ hashFiles('app/src/main/cpp/llama_jni.cpp') }}
+          key: llama-cpp-android-arm64-vulkan-v3-${{ hashFiles('app/src/main/cpp/llama_jni.cpp') }}
 
       - name: Build llama.cpp for Android (arm64-v8a)
         if: steps.llama-cache.outputs.cache-hit != 'true'
@@ -56,9 +56,11 @@ jobs:
           echo "NDK: $NDK_ROOT"
           [ -d "$NDK_ROOT" ] || { echo "ERROR: Android NDK not found"; exit 1; }
 
-          # ── Clone llama.cpp (latest HEAD, shallow) ─────────────────────────
-          git clone --depth=1 https://github.com/ggerganov/llama.cpp.git llama_src
-          echo "llama.cpp HEAD: $(git -C llama_src rev-parse --short HEAD)"
+          # ── Clone llama.cpp (pinned to stable release) ─────────────────────
+          LLAMA_CPP_TAG="b8763"
+          git clone --depth=1 --branch "$LLAMA_CPP_TAG" \
+            https://github.com/ggerganov/llama.cpp.git llama_src
+          echo "llama.cpp version: $LLAMA_CPP_TAG ($(git -C llama_src rev-parse --short HEAD))"
 
           # ── Ensure glslc is on PATH (needed for Vulkan shader compilation) ─
           # Try NDK shader-tools first, then system package
@@ -72,20 +74,25 @@ jobs:
           echo "glslc path: $(which glslc 2>/dev/null || echo 'NOT FOUND')"
 
           # ── Install Vulkan C++ headers (vulkan.hpp) for ggml-vulkan ────────
-          # NDK sysroot only ships C headers (vulkan.h); ggml-vulkan.cpp
-          # requires the C++ wrapper (vulkan.hpp). Install the system
-          # vulkan-headers package and copy .hpp files into the NDK sysroot.
-          sudo apt-get update -qq 2>/dev/null || true
-          sudo apt-get install -y -qq vulkan-headers 2>/dev/null || true
+          # NDK sysroot only ships C Vulkan headers (vulkan.h).
+          # ggml-vulkan.cpp requires the C++ wrapper (vulkan/vulkan.hpp)
+          # from the KhronosGroup/Vulkan-Hpp project — this is NOT included
+          # in the Ubuntu 'vulkan-headers' apt package.
           VULKAN_INCLUDE="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include"
-          if [ -d /usr/include/vulkan ]; then
-            cp /usr/include/vulkan/*.hpp "$VULKAN_INCLUDE/vulkan/" 2>/dev/null || true
-            # vk_video headers may be referenced by vulkan.hpp
-            cp -r /usr/include/vk_video "$VULKAN_INCLUDE/" 2>/dev/null || true
-            echo "Vulkan C++ headers copied to NDK sysroot"
+          git clone --depth=1 --filter=blob:none --sparse \
+            https://github.com/KhronosGroup/Vulkan-Hpp.git /tmp/vulkan-hpp
+          git -C /tmp/vulkan-hpp sparse-checkout set vulkan
+          cp /tmp/vulkan-hpp/vulkan/*.hpp "$VULKAN_INCLUDE/vulkan/"
+          echo "Vulkan C++ headers copied ($(ls /tmp/vulkan-hpp/vulkan/*.hpp | wc -l) files)"
+          rm -rf /tmp/vulkan-hpp
+          # Fail fast if the critical header is missing
+          if [ ! -f "$VULKAN_INCLUDE/vulkan/vulkan.hpp" ]; then
+            echo "ERROR: vulkan.hpp not found after header installation"
+            ls "$VULKAN_INCLUDE/vulkan/" 2>/dev/null
+            exit 1
           fi
           echo "Vulkan headers in NDK sysroot:"
-          ls "$VULKAN_INCLUDE/vulkan/"vulkan*.h* 2>/dev/null | head -10
+          ls "$VULKAN_INCLUDE/vulkan/"vulkan*.h* 2>/dev/null | head -15
 
           # ── CMake configure (Vulkan GPU, shared lib, no tests/examples) ────
           cmake \
