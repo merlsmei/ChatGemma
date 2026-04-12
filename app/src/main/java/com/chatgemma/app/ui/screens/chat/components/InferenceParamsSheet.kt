@@ -63,6 +63,28 @@ fun InferenceParamsSheet(
                 onValueChange = { onParamsChange(params.copy(maxTokens = it.roundToInt())) }
             )
 
+            // GPU Acceleration
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("GPU Acceleration", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "Experimental — may crash on some devices. Requires model reload.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = params.gpuLayers > 0,
+                    onCheckedChange = { enabled ->
+                        onParamsChange(params.copy(gpuLayers = if (enabled) 99 else 0))
+                    }
+                )
+            }
+
             Spacer(Modifier.height(16.dp))
             Button(
                 onClick = onDismiss,

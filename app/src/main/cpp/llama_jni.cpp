@@ -26,18 +26,20 @@ Java_com_chatgemma_app_ai_LlamaCppInferenceEngine_nativeInit(JNIEnv*, jobject) {
 
 JNIEXPORT jlong JNICALL
 Java_com_chatgemma_app_ai_LlamaCppInferenceEngine_nativeLoadModel(
-        JNIEnv* env, jobject, jstring jPath, jint nCtx, jint nThreads) {
+        JNIEnv* env, jobject, jstring jPath, jint nCtx, jint nThreads,
+        jint nGpuLayers) {
 
     const char* path = env->GetStringUTFChars(jPath, nullptr);
     llama_model_params mp = llama_model_default_params();
-    mp.n_gpu_layers = 99;  // Offload all layers to GPU (Vulkan) when available
+    mp.n_gpu_layers = nGpuLayers;  // 0 = CPU only, 99 = full GPU (Vulkan)
 
+    LOGI("Loading model: gpu_layers=%d, nCtx=%d, nThreads=%d", nGpuLayers, nCtx, nThreads);
     llama_model* model = llama_model_load_from_file(path, mp);
     env->ReleaseStringUTFChars(jPath, path);
 
     if (!model) { LOGE("Failed to load model"); return 0L; }
 
-    LOGI("Model loaded OK (nCtx=%d, nThreads=%d)", nCtx, nThreads);
+    LOGI("Model loaded OK (nCtx=%d, nThreads=%d, gpu_layers=%d)", nCtx, nThreads, nGpuLayers);
     auto* h = new LlamaHandle{model, nCtx, nThreads};
     return reinterpret_cast<jlong>(h);
 }

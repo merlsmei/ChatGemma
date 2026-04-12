@@ -54,7 +54,7 @@ class LlamaCppInferenceEngine @Inject constructor() : GemmaInferenceEngine {
             nativeInit()
             val nCtx     = params.maxTokens.coerceIn(512, 8192)
             val nThreads = Runtime.getRuntime().availableProcessors().coerceAtMost(8)
-            val handle = nativeLoadModel(modelPath, nCtx, nThreads)
+            val handle = nativeLoadModel(modelPath, nCtx, nThreads, params.gpuLayers)
             if (handle == 0L) throw IllegalStateException(
                 "llama.cpp could not load $modelPath (${"%.1f".format(file.length() / (1024f * 1024f))} MB). " +
                 "The model format may be unsupported. Try a different GGUF quantization."
@@ -119,7 +119,7 @@ class LlamaCppInferenceEngine @Inject constructor() : GemmaInferenceEngine {
 
     // ── JNI declarations ────────────────────────────────────────────────────
     private external fun nativeInit()
-    private external fun nativeLoadModel(path: String, nCtx: Int, nThreads: Int): Long
+    private external fun nativeLoadModel(path: String, nCtx: Int, nThreads: Int, nGpuLayers: Int): Long
     private external fun nativeGenerate(
         handle: Long, prompt: String, maxTokens: Int, temperature: Float, topP: Float
     ): String
