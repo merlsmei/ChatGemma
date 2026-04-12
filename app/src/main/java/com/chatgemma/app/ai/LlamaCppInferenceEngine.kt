@@ -1,12 +1,14 @@
 package com.chatgemma.app.ai
 
 import android.graphics.Bitmap
+import androidx.annotation.Keep
 import com.chatgemma.app.domain.model.InferenceParams
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -21,6 +23,9 @@ class LlamaCppInferenceEngine @Inject constructor() : GemmaInferenceEngine {
     private val _isReady = MutableStateFlow(false)
     private val _isGenerating = MutableStateFlow(false)
     private val inferenceMutex = Mutex()
+
+    @Volatile
+    private var tokenSink: ((String) -> Unit)? = null
 
     override val isReady: StateFlow<Boolean> = _isReady.asStateFlow()
     override val isGenerating: StateFlow<Boolean> = _isGenerating.asStateFlow()
@@ -64,20 +69,28 @@ class LlamaCppInferenceEngine @Inject constructor() : GemmaInferenceEngine {
         }
     }
 
+    // Called from JNI (nativeGenerateStreaming) for each generated token
+    @Keep
+    @Suppress("unused")
+    private fun onToken(token: String) {
+        tokenSink?.invoke(token)
+    }
+
     override fun generateStream(
         prompt: String, images: List<Bitmap>, params: InferenceParams
-    ): Flow<String> = flow {
+    ): Flow<String> = channelFlow {
         val h = modelHandle.takeIf { it != 0L }
             ?: throw IllegalStateException("Model not loaded")
         inferenceMutex.withLock {
             _isGenerating.value = true
             try {
-                val result = withContext(Dispatchers.IO) {
-                    nativeGenerate(h, prompt,
+                tokenSink = { token -> trySend(token) }
+                withContext(Dispatchers.IO) {
+                    nativeGenerateStreaming(h, prompt,
                         params.maxTokens, params.temperature, params.topP)
                 }
-                emit(result)
             } finally {
+                tokenSink = null
                 _isGenerating.value = false
             }
         }
@@ -123,6 +136,9 @@ class LlamaCppInferenceEngine @Inject constructor() : GemmaInferenceEngine {
     private external fun nativeGenerate(
         handle: Long, prompt: String, maxTokens: Int, temperature: Float, topP: Float
     ): String
+    private external fun nativeGenerateStreaming(
+        handle: Long, prompt: String, maxTokens: Int, temperature: Float, topP: Float
+    )
     private external fun nativeCountTokens(handle: Long, text: String): Int
     private external fun nativeFree(handle: Long)
 }

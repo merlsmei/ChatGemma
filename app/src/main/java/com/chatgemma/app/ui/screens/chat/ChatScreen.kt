@@ -191,8 +191,8 @@ fun ChatScreen(
                         )
                     }
 
-                    // Streaming indicator when generating and no streaming message yet
-                    if (state.isGenerating && state.streamingText.isNotEmpty()) {
+                    // Streaming indicator with GPU/CPU badge
+                    if (state.isGenerating) {
                         item {
                             Row(
                                 modifier = Modifier.padding(start = 12.dp, bottom = 8.dp),
@@ -205,6 +205,24 @@ fun ChatScreen(
                                 Spacer(Modifier.width(8.dp))
                                 Text("Generating…", style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurface.copy(0.5f))
+                                Spacer(Modifier.width(8.dp))
+                                Surface(
+                                    shape = MaterialTheme.shapes.extraSmall,
+                                    color = if (state.isUsingGpu)
+                                        MaterialTheme.colorScheme.tertiary.copy(alpha = 0.15f)
+                                    else
+                                        MaterialTheme.colorScheme.outline.copy(alpha = 0.12f)
+                                ) {
+                                    Text(
+                                        text = if (state.isUsingGpu) "GPU" else "CPU",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = if (state.isUsingGpu)
+                                            MaterialTheme.colorScheme.tertiary
+                                        else
+                                            MaterialTheme.colorScheme.onSurface.copy(0.5f),
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    )
+                                }
                             }
                         }
                     }

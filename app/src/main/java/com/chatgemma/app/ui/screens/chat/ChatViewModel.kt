@@ -103,7 +103,12 @@ class ChatViewModel @Inject constructor(
                     maxTokens = 1024
                 )
                 gemmaEngine.initialize(path, params)
-                _uiState.update { it.copy(isModelLoaded = true, modelLoadingError = null, inferenceParams = params) }
+                _uiState.update { it.copy(
+                    isModelLoaded = true,
+                    modelLoadingError = null,
+                    inferenceParams = params,
+                    isUsingGpu = params.gpuLayers > 0
+                ) }
             } catch (e: Exception) {
                 _uiState.update { it.copy(modelLoadingError = e.message ?: "Failed to load model") }
             }
