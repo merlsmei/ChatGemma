@@ -96,13 +96,37 @@ class ModelRepositoryImpl @Inject constructor(
             val mediapipeIds = mutableSetOf<String>()
             val mediapipeDtos = (mediapipeByTag + mediapipeByName).filter { mediapipeIds.add(it.modelId) }
 
-            // Combine: google first, then community GGUF, then mediapipe (skip duplicates)
+            // 4. Fetch LiteRT-LM models (Gemma 4 on-device with GPU)
+            val litertByTag = try {
+                huggingFaceApi.searchModels(
+                    search = "gemma litert",
+                    sort = "downloads",
+                    limit = 20
+                )
+            } catch (_: Exception) { emptyList() }
+
+            val litertByAuthor = try {
+                huggingFaceApi.searchModels(
+                    search = "gemma litertlm",
+                    sort = "downloads",
+                    limit = 15,
+                    author = "litert-community"
+                )
+            } catch (_: Exception) { emptyList() }
+
+            // Merge LiteRT searches, deduplicate
+            val litertIds = mutableSetOf<String>()
+            val litertDtos = (litertByTag + litertByAuthor).filter { litertIds.add(it.modelId) }
+
+            // Combine: google first, then community GGUF, mediapipe, litert (skip duplicates)
             val googleIds = googleDtos.map { it.modelId }.toSet()
             val communityIds = communityDtos.map { it.modelId }.toSet()
+            val mpIds = mediapipeDtos.map { it.modelId }.toSet()
             val combined: List<Pair<HfModelDto, String>> =
                 googleDtos.map { it to "google" } +
                 communityDtos.filter { it.modelId !in googleIds }.map { it to "community" } +
-                mediapipeDtos.filter { it.modelId !in googleIds && it.modelId !in communityIds }.map { it to "community" }
+                mediapipeDtos.filter { it.modelId !in googleIds && it.modelId !in communityIds }.map { it to "community" } +
+                litertDtos.filter { it.modelId !in googleIds && it.modelId !in communityIds && it.modelId !in mpIds }.map { it to "community" }
 
             combined.forEach { (dto, source) ->
                 if (dto.modelId.isBlank()) return@forEach
@@ -219,9 +243,13 @@ class ModelRepositoryImpl @Inject constructor(
     private fun detectFormat(modelId: String, tags: List<String>, quantization: String): String {
         val lower = modelId.lowercase()
         return when {
-            // Tags are the most reliable signal from HuggingFace
+            // LiteRT-LM: tags or ID patterns
+            tags.any { it.equals("litert", ignoreCase = true) ||
+                        it.equals("litertlm", ignoreCase = true) }           -> "LiteRT"
+            lower.contains("litert-lm") || lower.contains("litertlm")       -> "LiteRT"
+            lower.contains(".litertlm")                                       -> "LiteRT"
+            // MediaPipe: tags or ID patterns
             tags.any { it.equals("mediapipe", ignoreCase = true) }           -> "MediaPipe"
-            // ID patterns for MediaPipe models (e.g. google/gemma-2-2b-it-gpu-int4)
             lower.contains("mediapipe")                                       -> "MediaPipe"
             lower.contains("-task")                                           -> "MediaPipe"
             Regex("(gpu|cpu)[-_](int[48])").containsMatchIn(lower)           -> "MediaPipe"
@@ -282,13 +310,14 @@ class ModelRepositoryImpl @Inject constructor(
 
     // ── Download / delete ───────────────────────────────────────────────────
 
-    /** Pick the best downloadable file from a sibling list (Q4_K_M GGUF preferred). */
+    /** Pick the best downloadable file from a sibling list (Q4_K_M GGUF preferred, then .litertlm, then .task). */
     private fun findDownloadableFile(siblings: List<com.chatgemma.app.data.remote.dto.HfSibling>): com.chatgemma.app.data.remote.dto.HfSibling? =
         siblings.firstOrNull { it.rfilename.contains("Q4_K_M", ignoreCase = true) && it.rfilename.endsWith(".gguf") }
             ?: siblings.firstOrNull { it.rfilename.contains("Q4_0",   ignoreCase = true) && it.rfilename.endsWith(".gguf") }
             ?: siblings.firstOrNull { it.rfilename.contains("Q4",     ignoreCase = true) && it.rfilename.endsWith(".gguf") }
             ?: siblings.firstOrNull { it.rfilename.contains("Q5_K_M", ignoreCase = true) && it.rfilename.endsWith(".gguf") }
             ?: siblings.firstOrNull { it.rfilename.endsWith(".gguf") }
+            ?: siblings.firstOrNull { it.rfilename.endsWith(".litertlm") }
             ?: siblings.firstOrNull { it.rfilename.endsWith(".task") }
 
     /**

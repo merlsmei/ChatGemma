@@ -18,7 +18,7 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 enum class FormatFilter(val label: String) {
-    ALL("All"), GGUF("GGUF"), MEDIAPIPE("MediaPipe")
+    ALL("All"), GGUF("GGUF"), LITERT("LiteRT"), MEDIAPIPE("MediaPipe")
 }
 
 data class ModelManagerUiState(
@@ -107,7 +107,7 @@ class ModelManagerViewModel @Inject constructor(
     fun startLinkLocal(modelId: String) {
         val dir = modelRepository.getModelsDirectory()
         val files = dir.listFiles()
-            ?.filter { it.extension.lowercase() in listOf("gguf", "ggml", "task") }
+            ?.filter { it.extension.lowercase() in listOf("gguf", "ggml", "task", "litertlm") }
             ?.map { it.absolutePath }
             ?: emptyList()
         _uiState.update { it.copy(linkingModelId = modelId, localFiles = files) }

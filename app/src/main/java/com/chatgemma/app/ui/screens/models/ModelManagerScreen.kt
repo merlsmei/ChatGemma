@@ -94,6 +94,7 @@ fun ModelManagerScreen(
         when (state.formatFilter) {
             FormatFilter.ALL -> state.models
             FormatFilter.GGUF -> state.models.filter { it.format == "GGUF" }
+            FormatFilter.LITERT -> state.models.filter { it.format == "LiteRT" }
             FormatFilter.MEDIAPIPE -> state.models.filter { it.format == "MediaPipe" }
         }
     }
@@ -235,6 +236,7 @@ fun ModelManagerScreen(
                                     when (filter) {
                                         FormatFilter.ALL -> "All (${state.models.size})"
                                         FormatFilter.GGUF -> "GGUF (${state.models.count { it.format == "GGUF" }})"
+                                        FormatFilter.LITERT -> "LiteRT (${state.models.count { it.format == "LiteRT" }})"
                                         FormatFilter.MEDIAPIPE -> "MediaPipe (${state.models.count { it.format == "MediaPipe" }})"
                                     },
                                     style = MaterialTheme.typography.labelMedium
@@ -419,24 +421,31 @@ fun ModelCard(
                     },
                     icon = {
                         Icon(
-                            if (model.format == "GGUF") Icons.Default.Memory else Icons.Default.AutoAwesome,
+                            when (model.format) {
+                                "GGUF" -> Icons.Default.Memory
+                                "LiteRT" -> Icons.Default.Bolt
+                                else -> Icons.Default.AutoAwesome
+                            },
                             null,
                             modifier = Modifier.size(14.dp)
                         )
                     },
                     colors = SuggestionChipDefaults.suggestionChipColors(
-                        containerColor = if (model.format == "GGUF")
-                            MaterialTheme.colorScheme.tertiaryContainer
-                        else
-                            MaterialTheme.colorScheme.secondaryContainer,
-                        labelColor = if (model.format == "GGUF")
-                            MaterialTheme.colorScheme.onTertiaryContainer
-                        else
-                            MaterialTheme.colorScheme.onSecondaryContainer,
-                        iconContentColor = if (model.format == "GGUF")
-                            MaterialTheme.colorScheme.tertiary
-                        else
-                            MaterialTheme.colorScheme.secondary
+                        containerColor = when (model.format) {
+                            "GGUF" -> MaterialTheme.colorScheme.tertiaryContainer
+                            "LiteRT" -> MaterialTheme.colorScheme.primaryContainer
+                            else -> MaterialTheme.colorScheme.secondaryContainer
+                        },
+                        labelColor = when (model.format) {
+                            "GGUF" -> MaterialTheme.colorScheme.onTertiaryContainer
+                            "LiteRT" -> MaterialTheme.colorScheme.onPrimaryContainer
+                            else -> MaterialTheme.colorScheme.onSecondaryContainer
+                        },
+                        iconContentColor = when (model.format) {
+                            "GGUF" -> MaterialTheme.colorScheme.tertiary
+                            "LiteRT" -> MaterialTheme.colorScheme.primary
+                            else -> MaterialTheme.colorScheme.secondary
+                        }
                     )
                 )
                 if (model.source == "google") {

@@ -11,13 +11,15 @@ import javax.inject.Singleton
 
 /**
  * Routes inference to the appropriate engine based on downloaded model file extension:
- *  - .gguf / .ggml → LlamaCppInferenceEngine  (llama.cpp, GGUF format)
- *  - .task          → GemmaInferenceEngineImpl (MediaPipe, .task format)
+ *  - .gguf / .ggml  → LlamaCppInferenceEngine  (llama.cpp, GGUF format)
+ *  - .litertlm      → LiteRtInferenceEngine    (LiteRT-LM, Google AI Edge)
+ *  - .task           → GemmaInferenceEngineImpl (MediaPipe, .task format)
  */
 @Singleton
 class HybridInferenceEngine @Inject constructor(
     private val mediaPipeEngine: GemmaInferenceEngineImpl,
-    private val llamaCppEngine: LlamaCppInferenceEngine
+    private val llamaCppEngine: LlamaCppInferenceEngine,
+    private val liteRtEngine: LiteRtInferenceEngine
 ) : GemmaInferenceEngine {
 
     private var active: GemmaInferenceEngine? = null
@@ -28,11 +30,11 @@ class HybridInferenceEngine @Inject constructor(
     override val isGenerating: StateFlow<Boolean> = _isGenerating.asStateFlow()
 
     override suspend fun initialize(modelPath: String, params: InferenceParams) {
-        val engine = if (modelPath.endsWith(".gguf", ignoreCase = true) ||
-                         modelPath.endsWith(".ggml", ignoreCase = true)) {
-            llamaCppEngine
-        } else {
-            mediaPipeEngine
+        val engine = when {
+            modelPath.endsWith(".gguf", ignoreCase = true) ||
+            modelPath.endsWith(".ggml", ignoreCase = true) -> llamaCppEngine
+            modelPath.endsWith(".litertlm", ignoreCase = true) -> liteRtEngine
+            else -> mediaPipeEngine
         }
         active = engine
         engine.initialize(modelPath, params)

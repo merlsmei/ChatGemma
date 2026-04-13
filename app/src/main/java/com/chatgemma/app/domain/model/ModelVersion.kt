@@ -16,7 +16,7 @@ data class ModelVersion(
     val source: String = "community",   // "google" | "community"
     val gemmaGeneration: Int = 0,       // 4, 3, 2, 1, 0=unknown
     val paramCount: String = "",        // "1B", "2B", "4B", "9B", "12B", "27B", ""
-    val modelFormat: String = "GGUF"    // "GGUF" | "MediaPipe"
+    val modelFormat: String = "GGUF"    // "GGUF" | "MediaPipe" | "LiteRT"
 ) {
     val isDownloaded: Boolean get() = localPath != null
     val sizeMb: Float get() = sizeBytes / (1024f * 1024f)
@@ -28,6 +28,7 @@ data class ModelVersion(
         return when {
             path.endsWith(".gguf", ignoreCase = true) ||
             path.endsWith(".ggml", ignoreCase = true) -> "GGUF"
+            path.endsWith(".litertlm", ignoreCase = true) -> "LiteRT"
             path.endsWith(".task", ignoreCase = true)  -> "MediaPipe"
             else -> modelFormat
         }
