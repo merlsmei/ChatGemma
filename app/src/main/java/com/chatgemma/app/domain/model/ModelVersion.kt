@@ -21,14 +21,20 @@ data class ModelVersion(
     val sizeMb: Float get() = sizeBytes / (1024f * 1024f)
     val sizeGb: Float get() = sizeBytes / (1024f * 1024f * 1024f)
 
-    /** Model format derived from file path or download URL. */
+    /** Model format derived from file path, download URL, model ID, or quantization. */
     val format: String get() {
         val path = localPath ?: downloadUrl
         return when {
             path.endsWith(".gguf", ignoreCase = true) ||
             path.endsWith(".ggml", ignoreCase = true) -> "GGUF"
             path.endsWith(".task", ignoreCase = true)  -> "MediaPipe"
-            else -> "Unknown"
+            // Infer from model ID or quantization before download
+            id.contains("gguf", ignoreCase = true)     -> "GGUF"
+            quantization.startsWith("Q", ignoreCase = true) -> "GGUF"
+            quantization == "GGUF"                     -> "GGUF"
+            id.contains("mediapipe", ignoreCase = true) ||
+            id.contains("-task", ignoreCase = true)    -> "MediaPipe"
+            else -> "GGUF"  // HuggingFace models default to GGUF
         }
     }
 

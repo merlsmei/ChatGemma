@@ -74,11 +74,22 @@ class ModelRepositoryImpl @Inject constructor(
                 )
             } catch (_: Exception) { emptyList() }
 
-            // Combine: google first, then community (skip duplicates)
+            // 3. Fetch MediaPipe .task models from Google and community
+            val mediapipeDtos = try {
+                huggingFaceApi.searchModels(
+                    search = "gemma mediapipe task",
+                    sort = "downloads",
+                    limit = 15
+                )
+            } catch (_: Exception) { emptyList() }
+
+            // Combine: google first, then community GGUF, then mediapipe (skip duplicates)
             val googleIds = googleDtos.map { it.modelId }.toSet()
+            val communityIds = communityDtos.map { it.modelId }.toSet()
             val combined: List<Pair<HfModelDto, String>> =
                 googleDtos.map { it to "google" } +
-                communityDtos.filter { it.modelId !in googleIds }.map { it to "community" }
+                communityDtos.filter { it.modelId !in googleIds }.map { it to "community" } +
+                mediapipeDtos.filter { it.modelId !in googleIds && it.modelId !in communityIds }.map { it to "community" }
 
             combined.forEach { (dto, source) ->
                 if (dto.modelId.isBlank()) return@forEach
