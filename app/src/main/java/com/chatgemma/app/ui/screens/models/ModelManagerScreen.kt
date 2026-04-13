@@ -90,8 +90,15 @@ fun ModelManagerScreen(
     viewModel: ModelManagerViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    val (downloaded, available) = remember(state.models) {
-        state.models.partition { it.isDownloaded }
+    val filteredModels = remember(state.models, state.formatFilter) {
+        when (state.formatFilter) {
+            FormatFilter.ALL -> state.models
+            FormatFilter.GGUF -> state.models.filter { it.format == "GGUF" }
+            FormatFilter.MEDIAPIPE -> state.models.filter { it.format == "MediaPipe" }
+        }
+    }
+    val (downloaded, available) = remember(filteredModels) {
+        filteredModels.partition { it.isDownloaded }
     }
     val downloadedGroups = remember(downloaded) { downloaded.toGenerationGroups() }
     val availableGroups  = remember(available)  { available.toGenerationGroups() }
@@ -213,6 +220,34 @@ fun ModelManagerScreen(
                 }
             }
 
+            // Format filter chips
+            item {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    FormatFilter.entries.forEach { filter ->
+                        FilterChip(
+                            selected = state.formatFilter == filter,
+                            onClick = { viewModel.setFormatFilter(filter) },
+                            label = {
+                                Text(
+                                    when (filter) {
+                                        FormatFilter.ALL -> "All (${state.models.size})"
+                                        FormatFilter.GGUF -> "GGUF (${state.models.count { it.format == "GGUF" }})"
+                                        FormatFilter.MEDIAPIPE -> "MediaPipe (${state.models.count { it.format == "MediaPipe" }})"
+                                    },
+                                    style = MaterialTheme.typography.labelMedium
+                                )
+                            },
+                            leadingIcon = if (state.formatFilter == filter) {
+                                { Icon(Icons.Default.Check, null, modifier = Modifier.size(16.dp)) }
+                            } else null
+                        )
+                    }
+                }
+            }
+
             if (state.models.isEmpty()) {
                 item {
                     Box(
@@ -225,6 +260,19 @@ fun ModelManagerScreen(
                             Text("Fetching available models…",
                                 style = MaterialTheme.typography.bodySmall)
                         }
+                    }
+                }
+            } else if (filteredModels.isEmpty()) {
+                item {
+                    Box(
+                        modifier = Modifier.fillMaxWidth().height(100.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            "No ${state.formatFilter.label} models found.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 }
             }

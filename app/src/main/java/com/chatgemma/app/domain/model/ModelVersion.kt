@@ -15,26 +15,21 @@ data class ModelVersion(
     val isMobileSuitable: Boolean = false,
     val source: String = "community",   // "google" | "community"
     val gemmaGeneration: Int = 0,       // 4, 3, 2, 1, 0=unknown
-    val paramCount: String = ""         // "1B", "2B", "4B", "9B", "12B", "27B", ""
+    val paramCount: String = "",        // "1B", "2B", "4B", "9B", "12B", "27B", ""
+    val modelFormat: String = "GGUF"    // "GGUF" | "MediaPipe"
 ) {
     val isDownloaded: Boolean get() = localPath != null
     val sizeMb: Float get() = sizeBytes / (1024f * 1024f)
     val sizeGb: Float get() = sizeBytes / (1024f * 1024f * 1024f)
 
-    /** Model format derived from file path, download URL, model ID, or quantization. */
+    /** Model format: authoritative from file extension after download, else stored modelFormat. */
     val format: String get() {
-        val path = localPath ?: downloadUrl
+        val path = localPath ?: ""
         return when {
             path.endsWith(".gguf", ignoreCase = true) ||
             path.endsWith(".ggml", ignoreCase = true) -> "GGUF"
             path.endsWith(".task", ignoreCase = true)  -> "MediaPipe"
-            // Infer from model ID or quantization before download
-            id.contains("gguf", ignoreCase = true)     -> "GGUF"
-            quantization.startsWith("Q", ignoreCase = true) -> "GGUF"
-            quantization == "GGUF"                     -> "GGUF"
-            id.contains("mediapipe", ignoreCase = true) ||
-            id.contains("-task", ignoreCase = true)    -> "MediaPipe"
-            else -> "GGUF"  // HuggingFace models default to GGUF
+            else -> modelFormat
         }
     }
 

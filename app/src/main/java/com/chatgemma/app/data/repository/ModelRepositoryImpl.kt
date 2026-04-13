@@ -74,14 +74,27 @@ class ModelRepositoryImpl @Inject constructor(
                 )
             } catch (_: Exception) { emptyList() }
 
-            // 3. Fetch MediaPipe .task models from Google and community
-            val mediapipeDtos = try {
+            // 3. Fetch MediaPipe .task models via tag filter and keyword search
+            val mediapipeByTag = try {
                 huggingFaceApi.searchModels(
-                    search = "gemma mediapipe task",
+                    search = "gemma",
+                    filter = "mediapipe",
+                    sort = "downloads",
+                    limit = 20
+                )
+            } catch (_: Exception) { emptyList() }
+
+            val mediapipeByName = try {
+                huggingFaceApi.searchModels(
+                    search = "gemma mediapipe",
                     sort = "downloads",
                     limit = 15
                 )
             } catch (_: Exception) { emptyList() }
+
+            // Merge both MediaPipe searches, deduplicate
+            val mediapipeIds = mutableSetOf<String>()
+            val mediapipeDtos = (mediapipeByTag + mediapipeByName).filter { mediapipeIds.add(it.modelId) }
 
             // Combine: google first, then community GGUF, then mediapipe (skip duplicates)
             val googleIds = googleDtos.map { it.modelId }.toSet()
@@ -118,6 +131,7 @@ class ModelRepositoryImpl @Inject constructor(
         val ctx = parseContextLength(gen)
         val sizeBytes = dto.safetensors?.total?.takeIf { it > 0L }
             ?: estimateSizeBytes(params, quant)
+        val format = detectFormat(id, dto.tags, quant)
         return ModelVersion(
             id = id,
             displayName = formatDisplayName(id),
@@ -133,7 +147,8 @@ class ModelRepositoryImpl @Inject constructor(
             isMobileSuitable = isMobileSuitable(sizeBytes, quant, params),
             source = source,
             gemmaGeneration = gen,
-            paramCount = params
+            paramCount = params,
+            modelFormat = format
         )
     }
 
@@ -199,6 +214,23 @@ class ModelRepositoryImpl @Inject constructor(
         4    -> 1_048_576   // Gemma 4: 1M context
         3    -> 131_072     // Gemma 3: 128k context
         else -> 8_192       // Gemma 1/2: 8k context
+    }
+
+    private fun detectFormat(modelId: String, tags: List<String>, quantization: String): String {
+        val lower = modelId.lowercase()
+        return when {
+            // Tags are the most reliable signal from HuggingFace
+            tags.any { it.equals("mediapipe", ignoreCase = true) }           -> "MediaPipe"
+            // ID patterns for MediaPipe models (e.g. google/gemma-2-2b-it-gpu-int4)
+            lower.contains("mediapipe")                                       -> "MediaPipe"
+            lower.contains("-task")                                           -> "MediaPipe"
+            Regex("(gpu|cpu)[-_](int[48])").containsMatchIn(lower)           -> "MediaPipe"
+            // GGUF signals
+            lower.contains("gguf")                                            -> "GGUF"
+            quantization.startsWith("Q", ignoreCase = true)                  -> "GGUF"
+            quantization == "GGUF"                                            -> "GGUF"
+            else -> "GGUF"
+        }
     }
 
     private fun isMobileSuitable(sizeBytes: Long, quantization: String, paramCount: String): Boolean {
@@ -359,12 +391,12 @@ class ModelRepositoryImpl @Inject constructor(
     private fun ModelVersionEntity.toDomain() = ModelVersion(
         id, displayName, sizeBytes, downloadedAt, localPath,
         isActive, lastChecked, releaseDate, quantization, contextLength, downloadUrl,
-        isMobileSuitable, source, gemmaGeneration, paramCount
+        isMobileSuitable, source, gemmaGeneration, paramCount, modelFormat
     )
 
     private fun ModelVersion.toEntity() = ModelVersionEntity(
         id, displayName, sizeBytes, downloadedAt, localPath,
         isActive, lastChecked, releaseDate, quantization, contextLength, downloadUrl,
-        isMobileSuitable, source, gemmaGeneration, paramCount
+        isMobileSuitable, source, gemmaGeneration, paramCount, modelFormat
     )
 }

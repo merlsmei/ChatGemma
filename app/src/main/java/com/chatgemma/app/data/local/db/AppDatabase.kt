@@ -15,7 +15,7 @@ import com.chatgemma.app.data.local.entity.*
         ArchivedTopicEntity::class,
         ModelVersionEntity::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 @TypeConverters(Converters::class)

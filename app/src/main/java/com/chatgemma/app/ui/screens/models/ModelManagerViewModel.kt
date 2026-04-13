@@ -17,6 +17,10 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
+enum class FormatFilter(val label: String) {
+    ALL("All"), GGUF("GGUF"), MEDIAPIPE("MediaPipe")
+}
+
 data class ModelManagerUiState(
     val models: List<ModelVersion> = emptyList(),
     val isCheckingUpdates: Boolean = false,
@@ -25,7 +29,8 @@ data class ModelManagerUiState(
     val error: String? = null,
     val modelsDirectory: String = "",
     val linkingModelId: String? = null,     // model currently awaiting file pick
-    val localFiles: List<String> = emptyList()  // files in models dir for picker
+    val localFiles: List<String> = emptyList(),  // files in models dir for picker
+    val formatFilter: FormatFilter = FormatFilter.ALL
 )
 
 @HiltViewModel
@@ -226,6 +231,10 @@ class ModelManagerViewModel @Inject constructor(
                 _uiState.update { it.copy(isCheckingUpdates = false) }
             }
         }
+    }
+
+    fun setFormatFilter(filter: FormatFilter) {
+        _uiState.update { it.copy(formatFilter = filter) }
     }
 
     fun dismissError() {
