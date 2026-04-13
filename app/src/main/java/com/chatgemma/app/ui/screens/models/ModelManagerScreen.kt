@@ -357,54 +357,83 @@ fun ModelCard(
                 }
             }
 
-            // Row 2: source / mobile badges
-            if (model.source == "google" || model.isMobileSuitable) {
-                Spacer(Modifier.height(6.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    if (model.source == "google") {
-                        SuggestionChip(
-                            onClick = {},
-                            label = {
-                                Text(
-                                    "Google Official",
-                                    style = MaterialTheme.typography.labelSmall
-                                )
-                            },
-                            icon = {
-                                Icon(
-                                    Icons.Default.Verified, null,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                            },
-                            colors = SuggestionChipDefaults.suggestionChipColors(
-                                containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                                labelColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                                iconContentColor = MaterialTheme.colorScheme.secondary
-                            )
+            // Row 2: format / source / mobile badges
+            Spacer(Modifier.height(6.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                // Format badge (GGUF / MediaPipe)
+                SuggestionChip(
+                    onClick = {},
+                    label = {
+                        Text(
+                            model.format,
+                            style = MaterialTheme.typography.labelSmall
                         )
-                    }
-                    if (model.isMobileSuitable) {
-                        SuggestionChip(
-                            onClick = {},
-                            label = {
-                                Text(
-                                    "Mobile Ready",
-                                    style = MaterialTheme.typography.labelSmall
-                                )
-                            },
-                            icon = {
-                                Icon(
-                                    Icons.Default.PhoneAndroid, null,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                            },
-                            colors = SuggestionChipDefaults.suggestionChipColors(
-                                containerColor = Color(0xFF1B5E20).copy(alpha = 0.15f),
-                                labelColor = Color(0xFF2E7D32),
-                                iconContentColor = Color(0xFF2E7D32)
-                            )
+                    },
+                    icon = {
+                        Icon(
+                            if (model.format == "GGUF") Icons.Default.Memory else Icons.Default.AutoAwesome,
+                            null,
+                            modifier = Modifier.size(14.dp)
                         )
-                    }
+                    },
+                    colors = SuggestionChipDefaults.suggestionChipColors(
+                        containerColor = if (model.format == "GGUF")
+                            MaterialTheme.colorScheme.tertiaryContainer
+                        else
+                            MaterialTheme.colorScheme.secondaryContainer,
+                        labelColor = if (model.format == "GGUF")
+                            MaterialTheme.colorScheme.onTertiaryContainer
+                        else
+                            MaterialTheme.colorScheme.onSecondaryContainer,
+                        iconContentColor = if (model.format == "GGUF")
+                            MaterialTheme.colorScheme.tertiary
+                        else
+                            MaterialTheme.colorScheme.secondary
+                    )
+                )
+                if (model.source == "google") {
+                    SuggestionChip(
+                        onClick = {},
+                        label = {
+                            Text(
+                                "Google Official",
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        },
+                        icon = {
+                            Icon(
+                                Icons.Default.Verified, null,
+                                modifier = Modifier.size(14.dp)
+                            )
+                        },
+                        colors = SuggestionChipDefaults.suggestionChipColors(
+                            containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                            labelColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                            iconContentColor = MaterialTheme.colorScheme.secondary
+                        )
+                    )
+                }
+                if (model.isMobileSuitable) {
+                    SuggestionChip(
+                        onClick = {},
+                        label = {
+                            Text(
+                                "Mobile Ready",
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        },
+                        icon = {
+                            Icon(
+                                Icons.Default.PhoneAndroid, null,
+                                modifier = Modifier.size(14.dp)
+                            )
+                        },
+                        colors = SuggestionChipDefaults.suggestionChipColors(
+                            containerColor = Color(0xFF1B5E20).copy(alpha = 0.15f),
+                            labelColor = Color(0xFF2E7D32),
+                            iconContentColor = Color(0xFF2E7D32)
+                        )
+                    )
                 }
             }
 

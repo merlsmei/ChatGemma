@@ -21,6 +21,17 @@ data class ModelVersion(
     val sizeMb: Float get() = sizeBytes / (1024f * 1024f)
     val sizeGb: Float get() = sizeBytes / (1024f * 1024f * 1024f)
 
+    /** Model format derived from file path or download URL. */
+    val format: String get() {
+        val path = localPath ?: downloadUrl
+        return when {
+            path.endsWith(".gguf", ignoreCase = true) ||
+            path.endsWith(".ggml", ignoreCase = true) -> "GGUF"
+            path.endsWith(".task", ignoreCase = true)  -> "MediaPipe"
+            else -> "Unknown"
+        }
+    }
+
     /** Estimated RAM needed at runtime (model stays mapped in memory). */
     val ramRequiredGb: Float get() = when (quantization) {
         "int4" -> sizeGb * 1.25f
