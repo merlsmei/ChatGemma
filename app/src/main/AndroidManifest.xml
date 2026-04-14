@@ -31,9 +31,6 @@
     <uses-feature android:name="android.hardware.camera.any" android:required="false" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
 
-    <!-- GPU native library for LiteRT-LM OpenCL backend -->
-    <uses-native-library android:name="libOpenCL.so" android:required="false" />
-
     <application
         android:name=".ChatGemmaApplication"
         android:allowBackup="true"
@@ -46,6 +43,10 @@
         android:theme="@style/Theme.ChatGemma"
         android:hardwareAccelerated="true"
         android:largeHeap="true">
+
+        <!-- GPU native libraries for LiteRT-LM OpenCL backend -->
+        <uses-native-library android:name="libvndksupport.so" android:required="false" />
+        <uses-native-library android:name="libOpenCL.so" android:required="false" />
 
         <activity
             android:name=".MainActivity"

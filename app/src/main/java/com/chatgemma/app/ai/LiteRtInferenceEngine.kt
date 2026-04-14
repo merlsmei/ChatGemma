@@ -4,7 +4,6 @@ import android.content.Context
 import android.graphics.Bitmap
 import com.chatgemma.app.domain.model.InferenceParams
 import com.google.ai.edge.litertlm.Backend
-import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
