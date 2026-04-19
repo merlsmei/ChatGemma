@@ -4,10 +4,10 @@ import android.content.Context
 import android.graphics.Bitmap
 import com.chatgemma.app.domain.model.InferenceParams
 import com.google.ai.edge.litertlm.Backend
-import com.google.ai.edge.litertlm.Conversation
 import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
+import com.google.ai.edge.litertlm.Message
 import com.google.ai.edge.litertlm.SamplerConfig
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.channels.awaitClose
@@ -35,11 +35,12 @@ class LiteRtInferenceEngine @Inject constructor(
     private val inferenceMutex = Mutex()
 
     override suspend fun initialize(modelPath: String, params: InferenceParams) {
-        val backend = if (params.gpuLayers > 0) Backend.GPU else Backend.CPU
-        val config = EngineConfig.builder()
-            .setModelPath(modelPath)
-            .setBackend(backend)
-            .build()
+        val backend = if (params.gpuLayers > 0) Backend.GPU() else Backend.CPU()
+        val config = EngineConfig(
+            modelPath = modelPath,
+            backend = backend,
+            cacheDir = context.cacheDir.path
+        )
         engine = Engine(config).also { it.initialize() }
         _isReady.value = true
     }
@@ -52,17 +53,16 @@ class LiteRtInferenceEngine @Inject constructor(
         inferenceMutex.withLock {
             _isGenerating.value = true
             try {
-                val samplerConfig = SamplerConfig.builder()
-                    .setTemperature(params.temperature)
-                    .setTopK(params.topK)
-                    .setTopP(params.topP)
-                    .build()
-                val convConfig = ConversationConfig.builder()
-                    .setSamplerConfig(samplerConfig)
-                    .build()
-                val conversation: Conversation = engine!!.createConversation(convConfig)
+                val samplerConfig = SamplerConfig(
+                    topK = params.topK,
+                    topP = params.topP,
+                    temperature = params.temperature
+                )
+                val convConfig = ConversationConfig(samplerConfig = samplerConfig)
+                val conversation = engine!!.createConversation(convConfig)
                 val userMessage = extractLastUserMessage(prompt)
-                conversation.sendMessageAsync(userMessage).collect { token -> send(token) }
+                conversation.sendMessageAsync(Message.user(userMessage))
+                    .collect { msg -> send(msg.toString()) }
             } finally {
                 _isGenerating.value = false
             }
