@@ -5,6 +5,7 @@ on:
     branches:
       - "claude/android-gemma-chat-app-j6GOG"
       - "claude/model-download-progress-bar-Jlhq4"
+      - "claude/chatgemma-litert-integration-mKHbS"
       - main
   workflow_dispatch:
 
