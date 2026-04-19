@@ -7,5 +7,5 @@ data class InferenceParams(
     val topK: Int = 40,
     val topP: Float = 0.95f,
     val randomSeed: Int = 0,
-    val gpuLayers: Int = 0  // 0 = CPU only (safe default), 99 = full GPU offload
+    val gpuLayers: Int = 99  // 99 = full GPU offload; 0 = CPU only
 )

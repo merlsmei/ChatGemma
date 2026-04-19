@@ -106,6 +106,9 @@ dependencies {
     // MediaPipe GenAI (Gemma)
     implementation(libs.mediapipe.tasks.genai)
 
+    // LiteRT-LM (Google AI Edge, OpenCL GPU)
+    implementation(libs.litert.lm.android)
+
     // Network
     implementation(libs.retrofit)
     implementation(libs.retrofit.converter.gson)
