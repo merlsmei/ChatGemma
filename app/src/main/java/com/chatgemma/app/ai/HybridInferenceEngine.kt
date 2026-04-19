@@ -34,6 +34,8 @@ class HybridInferenceEngine @Inject constructor(
             modelPath.endsWith(".gguf", ignoreCase = true) ||
             modelPath.endsWith(".ggml", ignoreCase = true) -> llamaCppEngine
             modelPath.endsWith(".litertlm", ignoreCase = true) -> liteRtEngine
+            params.modelFormat.equals("LiteRT", ignoreCase = true) -> liteRtEngine
+            params.modelFormat.equals("GGUF", ignoreCase = true) -> llamaCppEngine
             else -> mediaPipeEngine
         }
         active = engine

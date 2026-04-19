@@ -2,6 +2,7 @@ package com.chatgemma.app.domain.model
 
 data class InferenceParams(
     val modelId: String = "",
+    val modelFormat: String = "",
     val temperature: Float = 0.8f,
     val maxTokens: Int = 1024,
     val topK: Int = 40,

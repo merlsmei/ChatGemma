@@ -115,7 +115,8 @@ class ChatViewModel @Inject constructor(
             try {
                 val params = _uiState.value.inferenceParams.copy(
                     modelId = model.id,
-                    maxTokens = 1024
+                    maxTokens = 1024,
+                    modelFormat = model.modelFormat
                 )
                 gemmaEngine.initialize(path, params)
                 _uiState.update { it.copy(
