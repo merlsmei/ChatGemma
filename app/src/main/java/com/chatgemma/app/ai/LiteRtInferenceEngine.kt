@@ -55,8 +55,8 @@ class LiteRtInferenceEngine @Inject constructor(
             try {
                 val samplerConfig = SamplerConfig(
                     topK = params.topK,
-                    topP = params.topP,
-                    temperature = params.temperature
+                    topP = params.topP.toDouble(),
+                    temperature = params.temperature.toDouble()
                 )
                 val convConfig = ConversationConfig(samplerConfig = samplerConfig)
                 val conversation = engine!!.createConversation(convConfig)
