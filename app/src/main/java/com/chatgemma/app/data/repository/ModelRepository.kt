@@ -13,4 +13,6 @@ interface ModelRepository {
     suspend fun enqueueDownload(modelId: String)
     suspend fun deleteModel(modelId: String)
     suspend fun markDownloaded(modelId: String, localPath: String)
+    fun getModelsDirectory(): java.io.File
+    suspend fun linkLocalFile(modelId: String, filePath: String): String?
 }

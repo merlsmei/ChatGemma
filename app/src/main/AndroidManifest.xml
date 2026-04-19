@@ -44,6 +44,10 @@
         android:hardwareAccelerated="true"
         android:largeHeap="true">
 
+        <!-- GPU native libraries for LiteRT-LM OpenCL backend -->
+        <uses-native-library android:name="libvndksupport.so" android:required="false" />
+        <uses-native-library android:name="libOpenCL.so" android:required="false" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"

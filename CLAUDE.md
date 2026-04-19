@@ -2,9 +2,9 @@
 
 ## llama.cpp JNI Integration
 
-### API Version (current HEAD as of April 2026)
+### API Version (pinned: b8763)
 
-The llama.cpp API changed significantly around build b4000. When building from source (`--depth=1` HEAD), use these function names:
+The llama.cpp API changed significantly around build b4000. The CI pins to tag `b8763`. Use these function names:
 
 | Old (deprecated/removed) | New |
 |---|---|
@@ -30,11 +30,14 @@ Modern llama.cpp distributes headers across multiple directories. The CI step co
 ### CI Build Strategy
 
 llama.cpp no longer publishes pre-built Android `.so` files. The workflow builds from source:
-1. Clone `--depth=1` HEAD
-2. CMake configure with NDK toolchain, `BUILD_SHARED_LIBS=ON`, no tests/examples/Metal/CUDA/Vulkan
-3. Copy `.so` outputs to `app/src/main/jniLibs/arm64-v8a/`
-4. Copy headers to `app/src/main/cpp/llama_include/`
-5. Cache both by `llama_jni.cpp` hash to avoid rebuilding on every push
+1. Clone pinned tag (`b8763`) — **do not use unpinned HEAD**; upstream changes break CI
+2. Install Vulkan C++ headers from `KhronosGroup/Vulkan-Hpp` (the NDK and `vulkan-headers` apt package only have C headers; ggml-vulkan.cpp needs `vulkan.hpp`)
+3. CMake configure with NDK toolchain, `BUILD_SHARED_LIBS=ON`, `GGML_VULKAN=ON`, no tests/examples/Metal/CUDA
+4. Copy `.so` outputs to `app/src/main/jniLibs/arm64-v8a/`
+5. Copy headers to `app/src/main/cpp/llama_include/`
+6. Cache both by `llama_jni.cpp` hash to avoid rebuilding on every push
+
+**To update llama.cpp version:** Change `LLAMA_CPP_TAG` in `build-release.yml` and bump the cache key suffix (`vulkan-v2` → `vulkan-v3` etc.) to force a rebuild.
 
 ### Fresh Context Per Generation
 

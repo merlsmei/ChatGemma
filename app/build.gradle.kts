@@ -73,7 +73,7 @@ android {
     }
     // Allow large model files in assets
     aaptOptions {
-        noCompress += listOf("bin", "task", "gguf")
+        noCompress += listOf("bin", "task", "gguf", "litertlm")
     }
 }
 
@@ -105,6 +105,9 @@ dependencies {
 
     // MediaPipe GenAI (Gemma)
     implementation(libs.mediapipe.tasks.genai)
+
+    // LiteRT-LM (Google AI Edge, OpenCL GPU)
+    implementation(libs.litert.lm.android)
 
     // Network
     implementation(libs.retrofit)

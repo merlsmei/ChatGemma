@@ -1,9 +1,13 @@
 package com.chatgemma.app.data.repository
 
 import android.content.Context
+import androidx.work.BackoffPolicy
 import androidx.work.Data
+import androidx.work.NetworkType
+import androidx.work.Constraints
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
+import java.util.concurrent.TimeUnit
 import com.chatgemma.app.data.local.db.dao.ModelVersionDao
 import com.chatgemma.app.data.local.entity.ModelVersionEntity
 import com.chatgemma.app.data.remote.api.HuggingFaceApi
@@ -70,11 +74,59 @@ class ModelRepositoryImpl @Inject constructor(
                 )
             } catch (_: Exception) { emptyList() }
 
-            // Combine: google first, then community (skip duplicates)
+            // 3. Fetch MediaPipe .task models via tag filter and keyword search
+            val mediapipeByTag = try {
+                huggingFaceApi.searchModels(
+                    search = "gemma",
+                    filter = "mediapipe",
+                    sort = "downloads",
+                    limit = 20
+                )
+            } catch (_: Exception) { emptyList() }
+
+            val mediapipeByName = try {
+                huggingFaceApi.searchModels(
+                    search = "gemma mediapipe",
+                    sort = "downloads",
+                    limit = 15
+                )
+            } catch (_: Exception) { emptyList() }
+
+            // Merge both MediaPipe searches, deduplicate
+            val mediapipeIds = mutableSetOf<String>()
+            val mediapipeDtos = (mediapipeByTag + mediapipeByName).filter { mediapipeIds.add(it.modelId) }
+
+            // 4. Fetch LiteRT-LM models (Gemma 4 on-device with GPU)
+            val litertByTag = try {
+                huggingFaceApi.searchModels(
+                    search = "gemma litert",
+                    sort = "downloads",
+                    limit = 20
+                )
+            } catch (_: Exception) { emptyList() }
+
+            val litertByAuthor = try {
+                huggingFaceApi.searchModels(
+                    search = "gemma litertlm",
+                    sort = "downloads",
+                    limit = 15,
+                    author = "litert-community"
+                )
+            } catch (_: Exception) { emptyList() }
+
+            // Merge LiteRT searches, deduplicate
+            val litertIds = mutableSetOf<String>()
+            val litertDtos = (litertByTag + litertByAuthor).filter { litertIds.add(it.modelId) }
+
+            // Combine: google first, then community GGUF, mediapipe, litert (skip duplicates)
             val googleIds = googleDtos.map { it.modelId }.toSet()
+            val communityIds = communityDtos.map { it.modelId }.toSet()
+            val mpIds = mediapipeDtos.map { it.modelId }.toSet()
             val combined: List<Pair<HfModelDto, String>> =
                 googleDtos.map { it to "google" } +
-                communityDtos.filter { it.modelId !in googleIds }.map { it to "community" }
+                communityDtos.filter { it.modelId !in googleIds }.map { it to "community" } +
+                mediapipeDtos.filter { it.modelId !in googleIds && it.modelId !in communityIds }.map { it to "community" } +
+                litertDtos.filter { it.modelId !in googleIds && it.modelId !in communityIds && it.modelId !in mpIds }.map { it to "community" }
 
             combined.forEach { (dto, source) ->
                 if (dto.modelId.isBlank()) return@forEach
@@ -103,6 +155,7 @@ class ModelRepositoryImpl @Inject constructor(
         val ctx = parseContextLength(gen)
         val sizeBytes = dto.safetensors?.total?.takeIf { it > 0L }
             ?: estimateSizeBytes(params, quant)
+        val format = detectFormat(id, dto.tags, quant)
         return ModelVersion(
             id = id,
             displayName = formatDisplayName(id),
@@ -118,7 +171,8 @@ class ModelRepositoryImpl @Inject constructor(
             isMobileSuitable = isMobileSuitable(sizeBytes, quant, params),
             source = source,
             gemmaGeneration = gen,
-            paramCount = params
+            paramCount = params,
+            modelFormat = format
         )
     }
 
@@ -186,6 +240,27 @@ class ModelRepositoryImpl @Inject constructor(
         else -> 8_192       // Gemma 1/2: 8k context
     }
 
+    private fun detectFormat(modelId: String, tags: List<String>, quantization: String): String {
+        val lower = modelId.lowercase()
+        return when {
+            // LiteRT-LM: tags or ID patterns
+            tags.any { it.equals("litert", ignoreCase = true) ||
+                        it.equals("litertlm", ignoreCase = true) }           -> "LiteRT"
+            lower.contains("litert-lm") || lower.contains("litertlm")       -> "LiteRT"
+            lower.contains(".litertlm")                                       -> "LiteRT"
+            // MediaPipe: tags or ID patterns
+            tags.any { it.equals("mediapipe", ignoreCase = true) }           -> "MediaPipe"
+            lower.contains("mediapipe")                                       -> "MediaPipe"
+            lower.contains("-task")                                           -> "MediaPipe"
+            Regex("(gpu|cpu)[-_](int[48])").containsMatchIn(lower)           -> "MediaPipe"
+            // GGUF signals
+            lower.contains("gguf")                                            -> "GGUF"
+            quantization.startsWith("Q", ignoreCase = true)                  -> "GGUF"
+            quantization == "GGUF"                                            -> "GGUF"
+            else -> "GGUF"
+        }
+    }
+
     private fun isMobileSuitable(sizeBytes: Long, quantization: String, paramCount: String): Boolean {
         // Threshold sized for a 12 GB device: model + KV cache + Android OS overhead
         val mobileQuant = quantization.lowercase().let {
@@ -235,28 +310,60 @@ class ModelRepositoryImpl @Inject constructor(
 
     // ── Download / delete ───────────────────────────────────────────────────
 
+    /** Pick the best downloadable file from a sibling list (Q4_K_M GGUF preferred, then .litertlm, then .task). */
+    private fun findDownloadableFile(siblings: List<com.chatgemma.app.data.remote.dto.HfSibling>): com.chatgemma.app.data.remote.dto.HfSibling? =
+        siblings.firstOrNull { it.rfilename.contains("Q4_K_M", ignoreCase = true) && it.rfilename.endsWith(".gguf") }
+            ?: siblings.firstOrNull { it.rfilename.contains("Q4_0",   ignoreCase = true) && it.rfilename.endsWith(".gguf") }
+            ?: siblings.firstOrNull { it.rfilename.contains("Q4",     ignoreCase = true) && it.rfilename.endsWith(".gguf") }
+            ?: siblings.firstOrNull { it.rfilename.contains("Q5_K_M", ignoreCase = true) && it.rfilename.endsWith(".gguf") }
+            ?: siblings.firstOrNull { it.rfilename.endsWith(".gguf") }
+            ?: siblings.firstOrNull { it.rfilename.endsWith(".litertlm") }
+            ?: siblings.firstOrNull { it.rfilename.endsWith(".task") }
+
+    /**
+     * Search HuggingFace for a community GGUF conversion of the given model.
+     * Returns (communityModelId, sibling) or null if none found.
+     */
+    private suspend fun findCommunityGguf(modelId: String): Pair<String, com.chatgemma.app.data.remote.dto.HfSibling>? {
+        val baseName = modelId.substringAfterLast("/")
+        val results = try {
+            huggingFaceApi.searchModels(
+                search = "$baseName gguf",
+                sort = "downloads",
+                limit = 5
+            )
+        } catch (_: Exception) { return null }
+
+        for (dto in results) {
+            if (dto.modelId == modelId) continue          // skip the original
+            val info = try { huggingFaceApi.getModelFiles(dto.modelId) } catch (_: Exception) { continue }
+            val file = findDownloadableFile(info.siblings)
+            if (file != null) return dto.modelId to file
+        }
+        return null
+    }
+
     override suspend fun enqueueDownload(modelId: String) {
         withContext(Dispatchers.IO) {
-            // Fetch the model's file list to find the actual .task file URL
+            // Fetch the model's file list to find a downloadable file
             val modelInfo = try {
                 huggingFaceApi.getModelFiles(modelId)
             } catch (e: Exception) {
                 throw IllegalStateException("Could not fetch model file list: ${e.message}")
             }
 
-            // Prefer Q4_K_M GGUF for best mobile quality/size trade-off, then any GGUF, then .task
-            val modelFile = modelInfo.siblings.let { siblings ->
-                siblings.firstOrNull { it.rfilename.contains("Q4_K_M", ignoreCase = true) && it.rfilename.endsWith(".gguf") }
-                    ?: siblings.firstOrNull { it.rfilename.contains("Q4_0",   ignoreCase = true) && it.rfilename.endsWith(".gguf") }
-                    ?: siblings.firstOrNull { it.rfilename.contains("Q4",     ignoreCase = true) && it.rfilename.endsWith(".gguf") }
-                    ?: siblings.firstOrNull { it.rfilename.contains("Q5_K_M", ignoreCase = true) && it.rfilename.endsWith(".gguf") }
-                    ?: siblings.firstOrNull { it.rfilename.endsWith(".gguf") }
-                    ?: siblings.firstOrNull { it.rfilename.endsWith(".task") }
-            } ?: throw IllegalStateException(
-                "No downloadable model file (.gguf or .task) found for \"$modelId\"."
-            )
+            // Try the original repo first, then fall back to community GGUF conversions
+            val directFile = findDownloadableFile(modelInfo.siblings)
+            val (downloadRepoId, downloadFile) = if (directFile != null) {
+                modelId to directFile
+            } else {
+                findCommunityGguf(modelId)
+                    ?: throw IllegalStateException(
+                        "No downloadable model file (.gguf or .task) found for \"$modelId\"."
+                    )
+            }
 
-            val downloadUrl = "https://huggingface.co/$modelId/resolve/main/${modelFile.rfilename}"
+            val downloadUrl = "https://huggingface.co/$downloadRepoId/resolve/main/${downloadFile.rfilename}"
 
             modelVersionDao.getModelById(modelId) ?: return@withContext
 
@@ -265,9 +372,15 @@ class ModelRepositoryImpl @Inject constructor(
                 .putString(ModelDownloadWorker.KEY_DOWNLOAD_URL, downloadUrl)
                 .build()
 
+            val constraints = Constraints.Builder()
+                .setRequiredNetworkType(NetworkType.CONNECTED)
+                .build()
+
             val request = OneTimeWorkRequestBuilder<ModelDownloadWorker>()
                 .setInputData(inputData)
                 .addTag("download_$modelId")
+                .setConstraints(constraints)
+                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
                 .build()
 
             WorkManager.getInstance(context).enqueue(request)
@@ -284,17 +397,35 @@ class ModelRepositoryImpl @Inject constructor(
         modelVersionDao.markDownloaded(modelId, localPath, System.currentTimeMillis())
     }
 
+    override fun getModelsDirectory(): File {
+        return File(context.getExternalFilesDir(null) ?: context.filesDir, "models")
+            .also { it.mkdirs() }
+    }
+
+    /**
+     * Link a local file to a model. Returns null on success, or the display name
+     * of the model already using that file.
+     */
+    override suspend fun linkLocalFile(modelId: String, filePath: String): String? {
+        val existing = modelVersionDao.getModelByLocalPath(filePath)
+        if (existing != null && existing.id != modelId) {
+            return existing.displayName
+        }
+        modelVersionDao.markDownloaded(modelId, filePath, System.currentTimeMillis())
+        return null
+    }
+
     // ── Mappers ─────────────────────────────────────────────────────────────
 
     private fun ModelVersionEntity.toDomain() = ModelVersion(
         id, displayName, sizeBytes, downloadedAt, localPath,
         isActive, lastChecked, releaseDate, quantization, contextLength, downloadUrl,
-        isMobileSuitable, source, gemmaGeneration, paramCount
+        isMobileSuitable, source, gemmaGeneration, paramCount, modelFormat
     )
 
     private fun ModelVersion.toEntity() = ModelVersionEntity(
         id, displayName, sizeBytes, downloadedAt, localPath,
         isActive, lastChecked, releaseDate, quantization, contextLength, downloadUrl,
-        isMobileSuitable, source, gemmaGeneration, paramCount
+        isMobileSuitable, source, gemmaGeneration, paramCount, modelFormat
     )
 }

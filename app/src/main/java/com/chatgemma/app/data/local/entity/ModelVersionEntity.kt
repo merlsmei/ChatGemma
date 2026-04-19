@@ -20,5 +20,7 @@ data class ModelVersionEntity(
     val isMobileSuitable: Boolean = false,
     val source: String = "community",
     val gemmaGeneration: Int = 0,
-    val paramCount: String = ""
+    val paramCount: String = "",
+    // v3 fields
+    val modelFormat: String = "GGUF"   // "GGUF" | "MediaPipe"
 )

@@ -26,18 +26,20 @@ Java_com_chatgemma_app_ai_LlamaCppInferenceEngine_nativeInit(JNIEnv*, jobject) {
 
 JNIEXPORT jlong JNICALL
 Java_com_chatgemma_app_ai_LlamaCppInferenceEngine_nativeLoadModel(
-        JNIEnv* env, jobject, jstring jPath, jint nCtx, jint nThreads) {
+        JNIEnv* env, jobject, jstring jPath, jint nCtx, jint nThreads,
+        jint nGpuLayers) {
 
     const char* path = env->GetStringUTFChars(jPath, nullptr);
     llama_model_params mp = llama_model_default_params();
-    mp.n_gpu_layers = 0;  // CPU-only on Android
+    mp.n_gpu_layers = nGpuLayers;  // 0 = CPU only, 99 = full GPU (Vulkan)
 
+    LOGI("Loading model: gpu_layers=%d, nCtx=%d, nThreads=%d", nGpuLayers, nCtx, nThreads);
     llama_model* model = llama_model_load_from_file(path, mp);
     env->ReleaseStringUTFChars(jPath, path);
 
     if (!model) { LOGE("Failed to load model"); return 0L; }
 
-    LOGI("Model loaded OK (nCtx=%d, nThreads=%d)", nCtx, nThreads);
+    LOGI("Model loaded OK (nCtx=%d, nThreads=%d, gpu_layers=%d)", nCtx, nThreads, nGpuLayers);
     auto* h = new LlamaHandle{model, nCtx, nThreads};
     return reinterpret_cast<jlong>(h);
 }
@@ -111,6 +113,79 @@ Java_com_chatgemma_app_ai_LlamaCppInferenceEngine_nativeGenerate(
     llama_sampler_free(sampler);
     llama_free(ctx);
     return env->NewStringUTF(output.c_str());
+}
+
+JNIEXPORT void JNICALL
+Java_com_chatgemma_app_ai_LlamaCppInferenceEngine_nativeGenerateStreaming(
+        JNIEnv* env, jobject thiz,
+        jlong handle, jstring jPrompt,
+        jint maxNewTokens, jfloat temperature, jfloat topP) {
+
+    auto* h = reinterpret_cast<LlamaHandle*>(handle);
+    if (!h) return;
+
+    // Look up the onToken callback once before entering the loop
+    jclass cls = env->GetObjectClass(thiz);
+    jmethodID onTokenId = env->GetMethodID(cls, "onToken", "(Ljava/lang/String;)V");
+    if (!onTokenId) { LOGE("onToken method not found"); return; }
+
+    llama_context_params cp = llama_context_default_params();
+    cp.n_ctx     = static_cast<uint32_t>(h->nCtx);
+    cp.n_threads = static_cast<uint32_t>(h->nThreads);
+    llama_context* ctx = llama_init_from_model(h->model, cp);
+    if (!ctx) {
+        LOGE("Failed to create context");
+        return;
+    }
+
+    const struct llama_vocab* vocab = llama_model_get_vocab(h->model);
+    const char* prompt = env->GetStringUTFChars(jPrompt, nullptr);
+
+    int nPrompt = -llama_tokenize(vocab, prompt, (int32_t)strlen(prompt),
+                                  nullptr, 0, true, true);
+    std::vector<llama_token> tokens(nPrompt);
+    llama_tokenize(vocab, prompt, (int32_t)strlen(prompt),
+                   tokens.data(), nPrompt, true, true);
+    env->ReleaseStringUTFChars(jPrompt, prompt);
+
+    llama_batch batch = llama_batch_get_one(tokens.data(), (int32_t)tokens.size());
+    if (llama_decode(ctx, batch) != 0) {
+        LOGE("Prompt decode failed");
+        llama_free(ctx);
+        return;
+    }
+
+    llama_sampler_chain_params scp = llama_sampler_chain_default_params();
+    llama_sampler* sampler = llama_sampler_chain_init(scp);
+    if (temperature <= 0.0f) {
+        llama_sampler_chain_add(sampler, llama_sampler_init_greedy());
+    } else {
+        llama_sampler_chain_add(sampler, llama_sampler_init_temp(temperature));
+        llama_sampler_chain_add(sampler, llama_sampler_init_top_p(topP, 1));
+        llama_sampler_chain_add(sampler, llama_sampler_init_dist(42));
+    }
+
+    for (int i = 0; i < maxNewTokens; ++i) {
+        llama_token tok = llama_sampler_sample(sampler, ctx, -1);
+        llama_sampler_accept(sampler, tok);
+        if (llama_vocab_is_eog(vocab, tok)) break;
+
+        char piece[256];
+        int n = llama_token_to_piece(vocab, tok, piece, sizeof(piece), 0, true);
+        if (n > 0) {
+            // Send each token piece back to Kotlin immediately
+            std::string s(piece, n);
+            jstring jPiece = env->NewStringUTF(s.c_str());
+            env->CallVoidMethod(thiz, onTokenId, jPiece);
+            env->DeleteLocalRef(jPiece);
+        }
+
+        llama_batch next = llama_batch_get_one(&tok, 1);
+        if (llama_decode(ctx, next) != 0) break;
+    }
+
+    llama_sampler_free(sampler);
+    llama_free(ctx);
 }
 
 JNIEXPORT jint JNICALL

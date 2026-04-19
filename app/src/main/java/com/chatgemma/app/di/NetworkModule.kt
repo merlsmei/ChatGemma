@@ -11,6 +11,7 @@ import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import java.util.concurrent.TimeUnit
+import javax.inject.Named
 import javax.inject.Singleton
 
 @Module
@@ -30,6 +31,16 @@ object NetworkModule {
         .addInterceptor(HttpLoggingInterceptor().apply {
             level = HttpLoggingInterceptor.Level.BASIC
         })
+        .build()
+
+    /** Separate client for large model downloads — no logging, longer timeouts, isolated pool. */
+    @Provides
+    @Singleton
+    @Named("download")
+    fun provideDownloadOkHttpClient(): OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(5, TimeUnit.MINUTES)
+        .writeTimeout(60, TimeUnit.SECONDS)
         .build()
 
     @Provides

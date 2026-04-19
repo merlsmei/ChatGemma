@@ -72,8 +72,23 @@ class ChatViewModel @Inject constructor(
 
     init {
         loadMessages()
-        loadModel()
+        checkGpuCrashThenLoadModel()
         observeSpeech()
+    }
+
+    private fun checkGpuCrashThenLoadModel() {
+        viewModelScope.launch {
+            val crashed = appPreferences.checkAndResetGpuCrash()
+            if (crashed) {
+                _uiState.update {
+                    it.copy(
+                        inferenceParams = it.inferenceParams.copy(gpuLayers = 0),
+                        error = "GPU acceleration crashed on last run and has been disabled."
+                    )
+                }
+            }
+            loadModel()
+        }
     }
 
     private fun loadMessages() {
@@ -103,9 +118,14 @@ class ChatViewModel @Inject constructor(
                     maxTokens = 1024
                 )
                 gemmaEngine.initialize(path, params)
-                _uiState.update { it.copy(isModelLoaded = true, modelLoadingError = null, inferenceParams = params) }
+                _uiState.update { it.copy(
+                    isModelLoaded = true,
+                    modelLoadingError = null,
+                    inferenceParams = params,
+                    isUsingGpu = params.gpuLayers > 0
+                ) }
             } catch (e: Exception) {
-                _uiState.update { it.copy(modelLoadingError = "Failed to load model: ${e.message}") }
+                _uiState.update { it.copy(modelLoadingError = e.message ?: "Failed to load model") }
             }
         }
     }
@@ -166,7 +186,8 @@ class ChatViewModel @Inject constructor(
                 attachedImages = emptyList(),
                 attachedVideoUri = null,
                 isGenerating = true,
-                streamingText = ""
+                streamingText = "",
+                messages = it.messages + userMessage
             )
         }
 
@@ -180,24 +201,42 @@ class ChatViewModel @Inject constructor(
                     bitmaps.addAll(frames)
                 }
 
+                // Build prompt with image descriptions so the model knows what's attached
+                val imageDesc = bitmaps.mapIndexed { i, bmp ->
+                    "[Image ${i + 1}: ${bmp.width}x${bmp.height}px]"
+                }.joinToString("\n")
+                val promptUserMessage = if (imageDesc.isNotEmpty()) {
+                    userMessage.copy(textContent = "$imageDesc\n${userMessage.textContent ?: ""}")
+                } else {
+                    userMessage
+                }
                 val prompt = PromptBuilder.buildChatPrompt(
-                    messageCache + userMessage
+                    messageCache + promptUserMessage
                 )
+
+                // Set GPU crash sentinel before inference if GPU is active
+                val gpuActive = state.inferenceParams.gpuLayers > 0
+                if (gpuActive) appPreferences.setGpuSentinel(true)
 
                 val accumulated = StringBuilder()
                 gemmaEngine.generateStream(prompt, bitmaps, state.inferenceParams)
                     .catch { e -> _uiState.update { it.copy(error = e.message, isGenerating = false) } }
                     .collect { partial ->
                         accumulated.append(partial)
-                        _uiState.update { it.copy(streamingText = accumulated.toString()) }
+                        _uiState.update { it.copy(streamingText = stripControlTokens(accumulated.toString())) }
                     }
+
+                // GPU inference survived — clear the sentinel
+                if (gpuActive) appPreferences.setGpuSentinel(false)
+
+                val cleanResponse = stripControlTokens(accumulated.toString())
 
                 val modelMessage = Message(
                     id = UUID.randomUUID().toString(),
                     sessionId = sessionId,
                     branchId = branchId,
                     role = "model",
-                    textContent = accumulated.toString(),
+                    textContent = cleanResponse,
                     createdAt = System.currentTimeMillis(),
                     tokenCount = (accumulated.length / 4).coerceAtLeast(1),
                     inferenceParamsJson = gson.toJson(state.inferenceParams)
@@ -209,17 +248,21 @@ class ChatViewModel @Inject constructor(
                     it.copy(
                         isGenerating = false,
                         streamingText = "",
-                        messages = it.messages + userMessage + modelMessage
+                        messages = it.messages + modelMessage
                     )
                 }
 
                 // Auto-speak if enabled
                 if (_uiState.value.isAutoSpeaking) {
-                    speechService.speak(accumulated.toString())
+                    speechService.speak(cleanResponse)
                 }
 
-                // Background auto-tag
-                autoTagTopicUseCase(sessionId, branchId)
+                // Background auto-tag (isolated so failures don't crash the chat)
+                viewModelScope.launch {
+                    try {
+                        autoTagTopicUseCase(sessionId, branchId)
+                    } catch (_: Exception) { }
+                }
                 updateContextUsage()
 
             } catch (e: Exception) {
@@ -307,8 +350,10 @@ class ChatViewModel @Inject constructor(
     }
 
     fun updateInferenceParams(params: InferenceParams) {
+        val gpuChanged = params.gpuLayers != _uiState.value.inferenceParams.gpuLayers
         _uiState.update { it.copy(inferenceParams = params) }
         viewModelScope.launch { appPreferences.saveInferenceParams(params) }
+        if (gpuChanged) loadModel()
     }
 
     fun dismissError() {
@@ -325,6 +370,13 @@ class ChatViewModel @Inject constructor(
         }
     }
 
+    private fun stripControlTokens(text: String): String =
+        text.replace("<end_of_turn>", "")
+            .replace("<start_of_turn>", "")
+            .replace("<eos>", "")
+            .replace("<bos>", "")
+            .trim()
+
     private fun uriToBitmap(uri: Uri): Bitmap? {
         return try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
@@ -339,6 +391,7 @@ class ChatViewModel @Inject constructor(
 
     override fun onCleared() {
         super.onCleared()
+        generationJob?.cancel()
         speechService.release()
     }
 }

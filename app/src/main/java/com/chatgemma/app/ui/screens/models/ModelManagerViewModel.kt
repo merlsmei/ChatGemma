@@ -17,12 +17,20 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
+enum class FormatFilter(val label: String) {
+    ALL("All"), GGUF("GGUF"), LITERT("LiteRT"), MEDIAPIPE("MediaPipe")
+}
+
 data class ModelManagerUiState(
     val models: List<ModelVersion> = emptyList(),
     val isCheckingUpdates: Boolean = false,
     val downloadProgress: Map<String, Int> = emptyMap(),
     val downloadPending: Set<String> = emptySet(),
-    val error: String? = null
+    val error: String? = null,
+    val modelsDirectory: String = "",
+    val linkingModelId: String? = null,     // model currently awaiting file pick
+    val localFiles: List<String> = emptyList(),  // files in models dir for picker
+    val formatFilter: FormatFilter = FormatFilter.ALL
 )
 
 @HiltViewModel
@@ -38,6 +46,9 @@ class ModelManagerViewModel @Inject constructor(
     val uiState: StateFlow<ModelManagerUiState> = _uiState.asStateFlow()
 
     init {
+        val modelsDir = modelRepository.getModelsDirectory()
+        _uiState.update { it.copy(modelsDirectory = modelsDir.absolutePath) }
+
         modelRepository.getAllModels()
             .onEach { models -> _uiState.update { it.copy(models = models) } }
             .launchIn(viewModelScope)
@@ -46,6 +57,32 @@ class ModelManagerViewModel @Inject constructor(
         viewModelScope.launch {
             val cached = modelRepository.getAllModels().first()
             if (cached.isEmpty()) checkForUpdates()
+        }
+
+        // Re-observe any in-progress downloads (survives navigation away and back)
+        resumeActiveDownloads()
+    }
+
+    private val observedModelIds = mutableSetOf<String>()
+
+    private fun resumeActiveDownloads() {
+        val workManager = WorkManager.getInstance(context)
+        viewModelScope.launch {
+            // Wait for models to load, then check for active downloads
+            modelRepository.getAllModels().first { it.isNotEmpty() }.forEach { model ->
+                if (model.id !in observedModelIds) {
+                    val workInfos = workManager.getWorkInfosByTagFlow("download_${model.id}")
+                        .first()
+                    val isActive = workInfos.any {
+                        it.state == WorkInfo.State.RUNNING ||
+                        it.state == WorkInfo.State.ENQUEUED ||
+                        it.state == WorkInfo.State.BLOCKED
+                    }
+                    if (isActive) {
+                        observeDownloadProgress(model.id)
+                    }
+                }
+            }
         }
     }
 
@@ -66,7 +103,40 @@ class ModelManagerViewModel @Inject constructor(
         }
     }
 
+    /** Begin local-file linking flow: show the file picker for this model. */
+    fun startLinkLocal(modelId: String) {
+        val dir = modelRepository.getModelsDirectory()
+        val files = dir.listFiles()
+            ?.filter { it.extension.lowercase() in listOf("gguf", "ggml", "task", "litertlm") }
+            ?.map { it.absolutePath }
+            ?: emptyList()
+        _uiState.update { it.copy(linkingModelId = modelId, localFiles = files) }
+    }
+
+    fun cancelLinkLocal() {
+        _uiState.update { it.copy(linkingModelId = null, localFiles = emptyList()) }
+    }
+
+    fun confirmLinkLocal(filePath: String) {
+        val modelId = _uiState.value.linkingModelId ?: return
+        viewModelScope.launch {
+            val conflict = modelRepository.linkLocalFile(modelId, filePath)
+            if (conflict != null) {
+                _uiState.update {
+                    it.copy(
+                        error = "File already linked to \"$conflict\"",
+                        linkingModelId = null,
+                        localFiles = emptyList()
+                    )
+                }
+            } else {
+                _uiState.update { it.copy(linkingModelId = null, localFiles = emptyList()) }
+            }
+        }
+    }
+
     private fun observeDownloadProgress(modelId: String) {
+        if (!observedModelIds.add(modelId)) return  // already observing
         val workManager = WorkManager.getInstance(context)
         workManager.getWorkInfosByTagFlow("download_$modelId")
             .onEach { workInfos ->
@@ -76,14 +146,18 @@ class ModelManagerViewModel @Inject constructor(
                         val progress = workInfo.progress.getInt(
                             ModelDownloadWorker.KEY_PROGRESS, 0
                         )
-                        _uiState.update {
-                            it.copy(
-                                downloadProgress = it.downloadProgress + (modelId to progress),
-                                downloadPending = it.downloadPending - modelId
-                            )
+                        val current = _uiState.value.downloadProgress[modelId]
+                        if (current != progress || modelId in _uiState.value.downloadPending) {
+                            _uiState.update {
+                                it.copy(
+                                    downloadProgress = it.downloadProgress + (modelId to progress),
+                                    downloadPending = it.downloadPending - modelId
+                                )
+                            }
                         }
                     }
                     WorkInfo.State.SUCCEEDED -> {
+                        observedModelIds.remove(modelId)
                         _uiState.update {
                             it.copy(
                                 downloadProgress = it.downloadProgress - modelId,
@@ -92,6 +166,7 @@ class ModelManagerViewModel @Inject constructor(
                         }
                     }
                     WorkInfo.State.FAILED -> {
+                        observedModelIds.remove(modelId)
                         val errorMsg = workInfo.outputData.getString(
                             ModelDownloadWorker.KEY_ERROR
                         ) ?: "Download failed"
@@ -104,6 +179,7 @@ class ModelManagerViewModel @Inject constructor(
                         }
                     }
                     WorkInfo.State.CANCELLED -> {
+                        observedModelIds.remove(modelId)
                         _uiState.update {
                             it.copy(
                                 downloadProgress = it.downloadProgress - modelId,
@@ -111,7 +187,14 @@ class ModelManagerViewModel @Inject constructor(
                             )
                         }
                     }
-                    else -> { /* ENQUEUED, BLOCKED — keep pending */ }
+                    WorkInfo.State.ENQUEUED, WorkInfo.State.BLOCKED -> {
+                        _uiState.update {
+                            it.copy(
+                                downloadProgress = it.downloadProgress + (modelId to 0),
+                                downloadPending = it.downloadPending - modelId
+                            )
+                        }
+                    }
                 }
             }
             .launchIn(viewModelScope)
@@ -148,6 +231,10 @@ class ModelManagerViewModel @Inject constructor(
                 _uiState.update { it.copy(isCheckingUpdates = false) }
             }
         }
+    }
+
+    fun setFormatFilter(filter: FormatFilter) {
+        _uiState.update { it.copy(formatFilter = filter) }
     }
 
     fun dismissError() {

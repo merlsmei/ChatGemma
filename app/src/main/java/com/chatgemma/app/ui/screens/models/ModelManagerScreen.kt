@@ -1,8 +1,16 @@
 package com.chatgemma.app.ui.screens.models
 
+import android.content.Intent
+import android.net.Uri
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -15,9 +23,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.content.FileProvider
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.chatgemma.app.domain.model.ModelVersion
@@ -79,18 +90,37 @@ fun ModelManagerScreen(
     viewModel: ModelManagerViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    val (downloaded, available) = remember(state.models) {
-        state.models.partition { it.isDownloaded }
+    val filteredModels = remember(state.models, state.formatFilter) {
+        when (state.formatFilter) {
+            FormatFilter.ALL -> state.models
+            FormatFilter.GGUF -> state.models.filter { it.format == "GGUF" }
+            FormatFilter.LITERT -> state.models.filter { it.format == "LiteRT" }
+            FormatFilter.MEDIAPIPE -> state.models.filter { it.format == "MediaPipe" }
+        }
+    }
+    val (downloaded, available) = remember(filteredModels) {
+        filteredModels.partition { it.isDownloaded }
     }
     val downloadedGroups = remember(downloaded) { downloaded.toGenerationGroups() }
     val availableGroups  = remember(available)  { available.toGenerationGroups() }
 
+    val ctx = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
     LaunchedEffect(state.error) {
         state.error?.let {
             snackbarHostState.showSnackbar(it)
             viewModel.dismissError()
         }
+    }
+
+    // File picker dialog for local model linking
+    if (state.linkingModelId != null) {
+        LocalFilePickerDialog(
+            files = state.localFiles,
+            modelsDir = state.modelsDirectory,
+            onSelect = viewModel::confirmLinkLocal,
+            onDismiss = viewModel::cancelLinkLocal
+        )
     }
 
     Scaffold(
@@ -104,6 +134,31 @@ fun ModelManagerScreen(
                     }
                 },
                 actions = {
+                    IconButton(onClick = {
+                        val dir = java.io.File(state.modelsDirectory)
+                        dir.mkdirs()
+                        try {
+                            val uri = FileProvider.getUriForFile(
+                                ctx, "${ctx.packageName}.fileprovider", dir
+                            )
+                            ctx.startActivity(
+                                Intent(Intent.ACTION_VIEW).setDataAndType(uri, "resource/folder")
+                                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            )
+                        } catch (_: Exception) {
+                            // Fallback: open generic file manager
+                            try {
+                                ctx.startActivity(
+                                    Intent(Intent.ACTION_VIEW).setDataAndType(
+                                        Uri.parse("content://com.android.externalstorage.documents/document/primary:Android%2Fdata"),
+                                        "vnd.android.document/directory"
+                                    )
+                                )
+                            } catch (_: Exception) { /* no file manager available */ }
+                        }
+                    }) {
+                        Icon(Icons.Default.FolderOpen, "Open models folder")
+                    }
                     if (state.isCheckingUpdates) {
                         CircularProgressIndicator(
                             modifier = Modifier
@@ -155,7 +210,42 @@ fun ModelManagerScreen(
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
                             )
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                "Models folder: ${state.modelsDirectory}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.6f)
+                            )
                         }
+                    }
+                }
+            }
+
+            // Format filter chips
+            item {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    FormatFilter.entries.forEach { filter ->
+                        FilterChip(
+                            selected = state.formatFilter == filter,
+                            onClick = { viewModel.setFormatFilter(filter) },
+                            label = {
+                                Text(
+                                    when (filter) {
+                                        FormatFilter.ALL -> "All (${state.models.size})"
+                                        FormatFilter.GGUF -> "GGUF (${state.models.count { it.format == "GGUF" }})"
+                                        FormatFilter.LITERT -> "LiteRT (${state.models.count { it.format == "LiteRT" }})"
+                                        FormatFilter.MEDIAPIPE -> "MediaPipe (${state.models.count { it.format == "MediaPipe" }})"
+                                    },
+                                    style = MaterialTheme.typography.labelMedium
+                                )
+                            },
+                            leadingIcon = if (state.formatFilter == filter) {
+                                { Icon(Icons.Default.Check, null, modifier = Modifier.size(16.dp)) }
+                            } else null
+                        )
                     }
                 }
             }
@@ -172,6 +262,19 @@ fun ModelManagerScreen(
                             Text("Fetching available models…",
                                 style = MaterialTheme.typography.bodySmall)
                         }
+                    }
+                }
+            } else if (filteredModels.isEmpty()) {
+                item {
+                    Box(
+                        modifier = Modifier.fillMaxWidth().height(100.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            "No ${state.formatFilter.label} models found.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 }
             }
@@ -198,7 +301,8 @@ fun ModelManagerScreen(
                             downloadPending = model.id in state.downloadPending,
                             onDownload  = { viewModel.downloadModel(model.id) },
                             onActivate  = { viewModel.setActiveModel(model.id) },
-                            onDelete    = { viewModel.deleteModel(model.id) }
+                            onDelete    = { viewModel.deleteModel(model.id) },
+                            onLinkLocal = { viewModel.startLinkLocal(model.id) }
                         )
                     }
                 }
@@ -225,7 +329,8 @@ fun ModelManagerScreen(
                             downloadPending = model.id in state.downloadPending,
                             onDownload  = { viewModel.downloadModel(model.id) },
                             onActivate  = { viewModel.setActiveModel(model.id) },
-                            onDelete    = { viewModel.deleteModel(model.id) }
+                            onDelete    = { viewModel.deleteModel(model.id) },
+                            onLinkLocal = { viewModel.startLinkLocal(model.id) }
                         )
                     }
                 }
@@ -264,7 +369,8 @@ fun ModelCard(
     downloadPending: Boolean = false,
     onDownload: () -> Unit,
     onActivate: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onLinkLocal: () -> Unit = {}
 ) {
     var showDeleteConfirm by remember { mutableStateOf(false) }
 
@@ -301,54 +407,90 @@ fun ModelCard(
                 }
             }
 
-            // Row 2: source / mobile badges
-            if (model.source == "google" || model.isMobileSuitable) {
-                Spacer(Modifier.height(6.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    if (model.source == "google") {
-                        SuggestionChip(
-                            onClick = {},
-                            label = {
-                                Text(
-                                    "Google Official",
-                                    style = MaterialTheme.typography.labelSmall
-                                )
-                            },
-                            icon = {
-                                Icon(
-                                    Icons.Default.Verified, null,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                            },
-                            colors = SuggestionChipDefaults.suggestionChipColors(
-                                containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                                labelColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                                iconContentColor = MaterialTheme.colorScheme.secondary
-                            )
+            // Row 2: format / source / mobile badges
+            Spacer(Modifier.height(6.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                // Format badge (GGUF / MediaPipe)
+                SuggestionChip(
+                    onClick = {},
+                    label = {
+                        Text(
+                            model.format,
+                            style = MaterialTheme.typography.labelSmall
                         )
-                    }
-                    if (model.isMobileSuitable) {
-                        SuggestionChip(
-                            onClick = {},
-                            label = {
-                                Text(
-                                    "Mobile Ready",
-                                    style = MaterialTheme.typography.labelSmall
-                                )
+                    },
+                    icon = {
+                        Icon(
+                            when (model.format) {
+                                "GGUF" -> Icons.Default.Memory
+                                "LiteRT" -> Icons.Default.Bolt
+                                else -> Icons.Default.AutoAwesome
                             },
-                            icon = {
-                                Icon(
-                                    Icons.Default.PhoneAndroid, null,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                            },
-                            colors = SuggestionChipDefaults.suggestionChipColors(
-                                containerColor = Color(0xFF1B5E20).copy(alpha = 0.15f),
-                                labelColor = Color(0xFF2E7D32),
-                                iconContentColor = Color(0xFF2E7D32)
-                            )
+                            null,
+                            modifier = Modifier.size(14.dp)
                         )
-                    }
+                    },
+                    colors = SuggestionChipDefaults.suggestionChipColors(
+                        containerColor = when (model.format) {
+                            "GGUF" -> MaterialTheme.colorScheme.tertiaryContainer
+                            "LiteRT" -> MaterialTheme.colorScheme.primaryContainer
+                            else -> MaterialTheme.colorScheme.secondaryContainer
+                        },
+                        labelColor = when (model.format) {
+                            "GGUF" -> MaterialTheme.colorScheme.onTertiaryContainer
+                            "LiteRT" -> MaterialTheme.colorScheme.onPrimaryContainer
+                            else -> MaterialTheme.colorScheme.onSecondaryContainer
+                        },
+                        iconContentColor = when (model.format) {
+                            "GGUF" -> MaterialTheme.colorScheme.tertiary
+                            "LiteRT" -> MaterialTheme.colorScheme.primary
+                            else -> MaterialTheme.colorScheme.secondary
+                        }
+                    )
+                )
+                if (model.source == "google") {
+                    SuggestionChip(
+                        onClick = {},
+                        label = {
+                            Text(
+                                "Google Official",
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        },
+                        icon = {
+                            Icon(
+                                Icons.Default.Verified, null,
+                                modifier = Modifier.size(14.dp)
+                            )
+                        },
+                        colors = SuggestionChipDefaults.suggestionChipColors(
+                            containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                            labelColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                            iconContentColor = MaterialTheme.colorScheme.secondary
+                        )
+                    )
+                }
+                if (model.isMobileSuitable) {
+                    SuggestionChip(
+                        onClick = {},
+                        label = {
+                            Text(
+                                "Mobile Ready",
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        },
+                        icon = {
+                            Icon(
+                                Icons.Default.PhoneAndroid, null,
+                                modifier = Modifier.size(14.dp)
+                            )
+                        },
+                        colors = SuggestionChipDefaults.suggestionChipColors(
+                            containerColor = Color(0xFF1B5E20).copy(alpha = 0.15f),
+                            labelColor = Color(0xFF2E7D32),
+                            iconContentColor = Color(0xFF2E7D32)
+                        )
+                    )
                 }
             }
 
@@ -380,8 +522,29 @@ fun ModelCard(
 
             Spacer(Modifier.height(10.dp))
 
-            // Row 4: action buttons / progress bar
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            // Row 4: HuggingFace URL (for undownloaded models)
+            if (!model.isDownloaded && model.downloadUrl.isNotBlank()) {
+                val linkCtx = LocalContext.current
+                Text(
+                    text = model.downloadUrl,
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        textDecoration = TextDecoration.Underline
+                    ),
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.clickable {
+                        linkCtx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(model.downloadUrl)))
+                    }
+                )
+                Spacer(Modifier.height(6.dp))
+            }
+
+            // Row 5: action buttons / progress bar
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 if (!model.isDownloaded) {
                     if (downloadProgress != null) {
                         DownloadProgressButton(progress = downloadProgress)
@@ -392,6 +555,19 @@ fun ModelCard(
                             Icon(Icons.Default.Download, null, modifier = Modifier.size(16.dp))
                             Spacer(Modifier.width(4.dp))
                             Text("Download")
+                        }
+                        OutlinedButton(onClick = onLinkLocal) {
+                            Icon(Icons.Default.FolderOpen, null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Load Local")
+                        }
+                        // Delete corrupted/partial file
+                        IconButton(onClick = { showDeleteConfirm = true }) {
+                            Icon(
+                                Icons.Default.Delete, "Delete file",
+                                tint = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.size(20.dp)
+                            )
                         }
                     }
                 } else {
@@ -443,10 +619,25 @@ private fun DownloadProgressButton(
     modifier: Modifier = Modifier
 ) {
     val shape = RoundedCornerShape(50)
+    val isIndeterminate = preparing || progress == 0
+
+    // Determinate fill animation
     val animatedProgress by animateFloatAsState(
         targetValue = progress / 100f,
         animationSpec = tween(durationMillis = 300),
         label = "download_progress"
+    )
+
+    // Indeterminate shimmer: a narrow bar sweeps back and forth
+    val infiniteTransition = rememberInfiniteTransition(label = "shimmer")
+    val shimmerOffset by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1200, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "shimmer_offset"
     )
 
     Box(
@@ -457,21 +648,94 @@ private fun DownloadProgressButton(
             .background(Color(0xFF1A237E).copy(alpha = 0.3f)),
         contentAlignment = Alignment.Center
     ) {
-        // Blue fill layer — sweeps left to right
-        Box(
-            modifier = Modifier
-                .fillMaxHeight()
-                .fillMaxWidth(fraction = if (preparing) 0f else animatedProgress)
-                .clip(shape)
-                .background(Color(0xFF1976D2))
-                .align(Alignment.CenterStart)
-        )
+        if (isIndeterminate) {
+            // Shimmer bar: 25% width sliding across
+            Box(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .fillMaxWidth(fraction = 0.25f)
+                    .offset(x = ((shimmerOffset * 140 * 0.75f).dp))
+                    .clip(shape)
+                    .background(Color(0xFF1976D2).copy(alpha = 0.6f))
+            )
+        } else {
+            // Determinate fill layer — sweeps left to right
+            Box(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .fillMaxWidth(fraction = animatedProgress)
+                    .clip(shape)
+                    .background(Color(0xFF1976D2))
+                    .align(Alignment.CenterStart)
+            )
+        }
         // Text overlay
         Text(
-            text = if (preparing) "Preparing…" else "$progress%",
+            text = when {
+                preparing -> "Preparing…"
+                progress == 0 -> "Starting…"
+                else -> "$progress%"
+            },
             color = Color.White,
             style = MaterialTheme.typography.labelMedium,
             fontWeight = FontWeight.SemiBold
         )
     }
+}
+
+// ── Local file picker dialog ─────────────────────────────────────────────────
+
+@Composable
+private fun LocalFilePickerDialog(
+    files: List<String>,
+    modelsDir: String,
+    onSelect: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Select a model file") },
+        text = {
+            if (files.isEmpty()) {
+                Column {
+                    Text("No .gguf or .task files found in the models folder.")
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Place model files in:\n$modelsDir",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    )
+                }
+            } else {
+                Column {
+                    Text(
+                        "Files in $modelsDir:",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    files.forEach { path ->
+                        val fileName = path.substringAfterLast("/")
+                        TextButton(
+                            onClick = { onSelect(path) },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Default.InsertDriveFile, null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                fileName,
+                                modifier = Modifier.weight(1f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
 }

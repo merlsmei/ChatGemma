@@ -1,5 +1,9 @@
 package com.chatgemma.app.ui.screens.chat.components
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.widget.Toast
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
@@ -14,6 +18,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.chatgemma.app.domain.model.Message
@@ -34,6 +39,7 @@ fun MessageBubble(
     onTopicClick: (String) -> Unit = {}
 ) {
     val isUser = message.role == "user"
+    val clipContext = LocalContext.current
     val chatColors = LocalChatGemmaColors.current
     val bubbleColor = if (isUser) chatColors.userBubble else chatColors.modelBubble
     val timeStr = SimpleDateFormat("HH:mm", Locale.getDefault())
@@ -66,7 +72,15 @@ fun MessageBubble(
                 .background(bubbleColor)
                 .combinedClickable(
                     onClick = {},
-                    onLongClick = { onLongPress(message) }
+                    onLongClick = {
+                        val text = message.textContent ?: ""
+                        if (text.isNotEmpty()) {
+                            val clipboard = clipContext.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            clipboard.setPrimaryClip(ClipData.newPlainText("message", text))
+                            Toast.makeText(clipContext, "Copied to clipboard", Toast.LENGTH_SHORT).show()
+                        }
+                        onLongPress(message)
+                    }
                 )
                 .padding(horizontal = 12.dp, vertical = 8.dp)
         ) {

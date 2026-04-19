@@ -31,5 +31,6 @@ data class ChatUiState(
     val showParamsSheet: Boolean = false,
     val isModelLoaded: Boolean = false,
     val modelLoadingError: String? = null,
-    val isAutoSpeaking: Boolean = false
+    val isAutoSpeaking: Boolean = false,
+    val isUsingGpu: Boolean = false
 )

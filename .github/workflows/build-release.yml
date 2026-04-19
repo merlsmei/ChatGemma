@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - "claude/android-gemma-chat-app-j6GOG"
+      - "claude/model-download-progress-bar-Jlhq4"
+      - "claude/chatgemma-litert-integration-mKHbS"
       - main
   workflow_dispatch:
 
@@ -39,7 +41,7 @@ jobs:
           path: |
             app/src/main/jniLibs/arm64-v8a
             app/src/main/cpp/llama_include
-          key: llama-cpp-android-arm64-v1-${{ hashFiles('app/src/main/cpp/llama_jni.cpp') }}
+          key: llama-cpp-android-arm64-vulkan-v3-${{ hashFiles('app/src/main/cpp/llama_jni.cpp') }}
 
       - name: Build llama.cpp for Android (arm64-v8a)
         if: steps.llama-cache.outputs.cache-hit != 'true'
@@ -55,11 +57,50 @@ jobs:
           echo "NDK: $NDK_ROOT"
           [ -d "$NDK_ROOT" ] || { echo "ERROR: Android NDK not found"; exit 1; }
 
-          # ── Clone llama.cpp (latest HEAD, shallow) ─────────────────────────
-          git clone --depth=1 https://github.com/ggerganov/llama.cpp.git llama_src
-          echo "llama.cpp HEAD: $(git -C llama_src rev-parse --short HEAD)"
+          # ── Clone llama.cpp (pinned to stable release) ─────────────────────
+          LLAMA_CPP_TAG="b8763"
+          git clone --depth=1 --branch "$LLAMA_CPP_TAG" \
+            https://github.com/ggerganov/llama.cpp.git llama_src
+          echo "llama.cpp version: $LLAMA_CPP_TAG ($(git -C llama_src rev-parse --short HEAD))"
 
-          # ── CMake configure (CPU-only, shared lib, no tests/examples) ───────
+          # ── Ensure glslc is on PATH (needed for Vulkan shader compilation) ─
+          # Try NDK shader-tools first, then system package
+          SHADER_TOOLS="$NDK_ROOT/shader-tools/linux-x86_64"
+          if [ -x "$SHADER_TOOLS/glslc" ]; then
+            export PATH="$SHADER_TOOLS:$PATH"
+          else
+            sudo apt-get update -qq && sudo apt-get install -y -qq glslc shaderc 2>/dev/null \
+              || sudo apt-get install -y -qq glslang-tools 2>/dev/null || true
+          fi
+          echo "glslc path: $(which glslc 2>/dev/null || echo 'NOT FOUND')"
+
+          # ── Install Vulkan C++ headers (vulkan.hpp) for ggml-vulkan ────────
+          # NDK sysroot only ships C Vulkan headers (vulkan.h).
+          # ggml-vulkan.cpp requires the C++ wrapper (vulkan/vulkan.hpp)
+          # from the KhronosGroup/Vulkan-Hpp project — this is NOT included
+          # in the Ubuntu 'vulkan-headers' apt package.
+          # IMPORTANT: The Vulkan-Hpp tag MUST match the NDK's VK_HEADER_VERSION.
+          # NDK 27.x ships Vulkan 1.3.275 — using a mismatched Vulkan-Hpp
+          # version causes 'Wrong VK_HEADER_VERSION!' static assertion failures.
+          # To find the NDK version: grep VK_HEADER_VERSION $NDK_ROOT/.../vulkan_core.h
+          VULKAN_INCLUDE="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include"
+          VULKAN_HPP_TAG="v1.3.275"
+          git clone --depth=1 --branch "$VULKAN_HPP_TAG" --filter=blob:none --sparse \
+            https://github.com/KhronosGroup/Vulkan-Hpp.git /tmp/vulkan-hpp
+          git -C /tmp/vulkan-hpp sparse-checkout set vulkan
+          cp /tmp/vulkan-hpp/vulkan/*.hpp "$VULKAN_INCLUDE/vulkan/"
+          echo "Vulkan C++ headers ($VULKAN_HPP_TAG) copied ($(ls /tmp/vulkan-hpp/vulkan/*.hpp | wc -l) files)"
+          rm -rf /tmp/vulkan-hpp
+          # Fail fast if the critical header is missing
+          if [ ! -f "$VULKAN_INCLUDE/vulkan/vulkan.hpp" ]; then
+            echo "ERROR: vulkan.hpp not found after header installation"
+            ls "$VULKAN_INCLUDE/vulkan/" 2>/dev/null
+            exit 1
+          fi
+          echo "Vulkan headers in NDK sysroot:"
+          ls "$VULKAN_INCLUDE/vulkan/"vulkan*.h* 2>/dev/null | head -15
+
+          # ── CMake configure (Vulkan GPU, shared lib, no tests/examples) ────
           cmake \
             -S llama_src -B llama_build \
             -DCMAKE_TOOLCHAIN_FILE="$NDK_ROOT/build/cmake/android.toolchain.cmake" \
@@ -72,8 +113,10 @@ jobs:
             -DLLAMA_BUILD_SERVER=OFF \
             -DGGML_METAL=OFF \
             -DGGML_CUDA=OFF \
-            -DGGML_VULKAN=OFF \
-            -DGGML_OPENMP=OFF
+            -DGGML_VULKAN=ON \
+            -DGGML_OPENMP=OFF \
+            -DVulkan_INCLUDE_DIR="$VULKAN_INCLUDE" \
+            -DVulkan_LIBRARY="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/33/libvulkan.so"
 
           # ── Build ──────────────────────────────────────────────────────────
           cmake --build llama_build -j$(nproc)
