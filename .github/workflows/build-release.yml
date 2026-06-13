@@ -41,7 +41,7 @@ jobs:
           path: |
             app/src/main/jniLibs/arm64-v8a
             app/src/main/cpp/llama_include
-          key: llama-cpp-android-arm64-vulkan-v3-${{ hashFiles('app/src/main/cpp/llama_jni.cpp') }}
+          key: llama-cpp-android-arm64-opencl-v1-${{ hashFiles('app/src/main/cpp/llama_jni.cpp') }}
 
       - name: Build llama.cpp for Android (arm64-v8a)
         if: steps.llama-cache.outputs.cache-hit != 'true'
@@ -63,44 +63,34 @@ jobs:
             https://github.com/ggerganov/llama.cpp.git llama_src
           echo "llama.cpp version: $LLAMA_CPP_TAG ($(git -C llama_src rev-parse --short HEAD))"
 
-          # ── Ensure glslc is on PATH (needed for Vulkan shader compilation) ─
-          # Try NDK shader-tools first, then system package
-          SHADER_TOOLS="$NDK_ROOT/shader-tools/linux-x86_64"
-          if [ -x "$SHADER_TOOLS/glslc" ]; then
-            export PATH="$SHADER_TOOLS:$PATH"
-          else
-            sudo apt-get update -qq && sudo apt-get install -y -qq glslc shaderc 2>/dev/null \
-              || sudo apt-get install -y -qq glslang-tools 2>/dev/null || true
-          fi
-          echo "glslc path: $(which glslc 2>/dev/null || echo 'NOT FOUND')"
+          # ── Install OpenCL headers (CL/cl.h, …) for ggml-opencl ────────────
+          # NDK sysroot does not ship the Khronos OpenCL headers.
+          NDK_SYSROOT="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
+          git clone --depth=1 https://github.com/KhronosGroup/OpenCL-Headers /tmp/opencl-headers
+          cp -r /tmp/opencl-headers/CL "$NDK_SYSROOT/usr/include/"
+          rm -rf /tmp/opencl-headers
+          echo "OpenCL headers installed:"
+          ls "$NDK_SYSROOT/usr/include/CL/" | head -10
 
-          # ── Install Vulkan C++ headers (vulkan.hpp) for ggml-vulkan ────────
-          # NDK sysroot only ships C Vulkan headers (vulkan.h).
-          # ggml-vulkan.cpp requires the C++ wrapper (vulkan/vulkan.hpp)
-          # from the KhronosGroup/Vulkan-Hpp project — this is NOT included
-          # in the Ubuntu 'vulkan-headers' apt package.
-          # IMPORTANT: The Vulkan-Hpp tag MUST match the NDK's VK_HEADER_VERSION.
-          # NDK 27.x ships Vulkan 1.3.275 — using a mismatched Vulkan-Hpp
-          # version causes 'Wrong VK_HEADER_VERSION!' static assertion failures.
-          # To find the NDK version: grep VK_HEADER_VERSION $NDK_ROOT/.../vulkan_core.h
-          VULKAN_INCLUDE="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include"
-          VULKAN_HPP_TAG="v1.3.275"
-          git clone --depth=1 --branch "$VULKAN_HPP_TAG" --filter=blob:none --sparse \
-            https://github.com/KhronosGroup/Vulkan-Hpp.git /tmp/vulkan-hpp
-          git -C /tmp/vulkan-hpp sparse-checkout set vulkan
-          cp /tmp/vulkan-hpp/vulkan/*.hpp "$VULKAN_INCLUDE/vulkan/"
-          echo "Vulkan C++ headers ($VULKAN_HPP_TAG) copied ($(ls /tmp/vulkan-hpp/vulkan/*.hpp | wc -l) files)"
-          rm -rf /tmp/vulkan-hpp
-          # Fail fast if the critical header is missing
-          if [ ! -f "$VULKAN_INCLUDE/vulkan/vulkan.hpp" ]; then
-            echo "ERROR: vulkan.hpp not found after header installation"
-            ls "$VULKAN_INCLUDE/vulkan/" 2>/dev/null
-            exit 1
-          fi
-          echo "Vulkan headers in NDK sysroot:"
-          ls "$VULKAN_INCLUDE/vulkan/"vulkan*.h* 2>/dev/null | head -15
+          # ── Build OpenCL-ICD-Loader (provides libOpenCL.so for linking) ────
+          # On-device, the ICD loader dispatches to the vendor (Adreno) driver.
+          git clone --depth=1 https://github.com/KhronosGroup/OpenCL-ICD-Loader /tmp/opencl-icd-loader
+          cmake -S /tmp/opencl-icd-loader -B /tmp/opencl-icd-loader/build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK_ROOT/build/cmake/android.toolchain.cmake" \
+            -DOPENCL_ICD_LOADER_HEADERS_DIR="$NDK_SYSROOT/usr/include" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-26
+          cmake --build /tmp/opencl-icd-loader/build -j$(nproc)
+          cp /tmp/opencl-icd-loader/build/libOpenCL.so "$NDK_SYSROOT/usr/lib/aarch64-linux-android/"
+          rm -rf /tmp/opencl-icd-loader
+          echo "libOpenCL.so installed to NDK sysroot"
 
-          # ── CMake configure (Vulkan GPU, shared lib, no tests/examples) ────
+          # ── CMake configure (OpenCL/Adreno GPU, shared lib, no tests) ──────
+          # Vulkan is intentionally NOT used: it is known to be unreliable on
+          # Adreno GPUs (model load failures / poor perf). GGML_OPENCL with
+          # Adreno-optimized kernels is the Qualcomm-recommended GPU path for
+          # llama.cpp on Android.
           cmake \
             -S llama_src -B llama_build \
             -DCMAKE_TOOLCHAIN_FILE="$NDK_ROOT/build/cmake/android.toolchain.cmake" \
@@ -113,10 +103,13 @@ jobs:
             -DLLAMA_BUILD_SERVER=OFF \
             -DGGML_METAL=OFF \
             -DGGML_CUDA=OFF \
-            -DGGML_VULKAN=ON \
+            -DGGML_VULKAN=OFF \
+            -DGGML_OPENCL=ON \
+            -DGGML_OPENCL_USE_ADRENO_KERNELS=ON \
+            -DGGML_OPENCL_EMBED_KERNELS=ON \
             -DGGML_OPENMP=OFF \
-            -DVulkan_INCLUDE_DIR="$VULKAN_INCLUDE" \
-            -DVulkan_LIBRARY="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/33/libvulkan.so"
+            -DOpenCL_INCLUDE_DIR="$NDK_SYSROOT/usr/include" \
+            -DOpenCL_LIBRARY="$NDK_SYSROOT/usr/lib/aarch64-linux-android/libOpenCL.so"
 
           # ── Build ──────────────────────────────────────────────────────────
           cmake --build llama_build -j$(nproc)
@@ -125,8 +118,16 @@ jobs:
           mkdir -p app/src/main/jniLibs/arm64-v8a
           find llama_build -name "*.so" \
             -exec cp {} app/src/main/jniLibs/arm64-v8a/ \;
+          # Bundle our ICD loader so libggml-opencl.so resolves libOpenCL.so at
+          # runtime; it dispatches to the on-device Adreno OpenCL driver.
+          cp "$NDK_SYSROOT/usr/lib/aarch64-linux-android/libOpenCL.so" \
+            app/src/main/jniLibs/arm64-v8a/
           echo "Shared libraries:"
           ls -lh app/src/main/jniLibs/arm64-v8a/
+          if [ ! -f app/src/main/jniLibs/arm64-v8a/libggml-opencl.so ]; then
+            echo "ERROR: libggml-opencl.so not found — OpenCL backend was not built"
+            exit 1
+          fi
 
           # ── Copy headers ───────────────────────────────────────────────────
           # Modern llama.cpp splits headers across include/ and ggml/include/;

@@ -4,6 +4,7 @@
 #include <cstring>
 #include <android/log.h>
 #include "llama.h"
+#include "ggml-backend.h"
 
 #define TAG "LlamaCpp"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  TAG, __VA_ARGS__)
@@ -22,6 +23,17 @@ extern "C" {
 JNIEXPORT void JNICALL
 Java_com_chatgemma_app_ai_LlamaCppInferenceEngine_nativeInit(JNIEnv*, jobject) {
     llama_backend_init();
+    ggml_backend_load_all();
+
+    size_t nDevices = ggml_backend_dev_count();
+    LOGI("GGML backend devices: %zu", nDevices);
+    for (size_t i = 0; i < nDevices; ++i) {
+        ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+        LOGI("  [%zu] %s — %s (type=%d)", i,
+             ggml_backend_dev_name(dev),
+             ggml_backend_dev_description(dev),
+             (int)ggml_backend_dev_type(dev));
+    }
 }
 
 JNIEXPORT jlong JNICALL
