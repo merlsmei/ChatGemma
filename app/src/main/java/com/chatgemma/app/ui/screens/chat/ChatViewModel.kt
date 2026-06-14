@@ -220,8 +220,9 @@ class ChatViewModel @Inject constructor(
                 if (gpuActive) appPreferences.setGpuSentinel(true)
 
                 val accumulated = StringBuilder()
+                var streamError: String? = null
                 gemmaEngine.generateStream(prompt, bitmaps, state.inferenceParams)
-                    .catch { e -> _uiState.update { it.copy(error = e.message, isGenerating = false) } }
+                    .catch { e -> streamError = e.message ?: "Generation failed" }
                     .collect { partial ->
                         accumulated.append(partial)
                         _uiState.update { it.copy(streamingText = stripControlTokens(accumulated.toString())) }
@@ -231,13 +232,18 @@ class ChatViewModel @Inject constructor(
                 if (gpuActive) appPreferences.setGpuSentinel(false)
 
                 val cleanResponse = stripControlTokens(accumulated.toString())
+                val responseText = when {
+                    streamError != null -> "[Error: $streamError]"
+                    cleanResponse.isEmpty() -> "[No response generated. The model may not support this prompt format — try adjusting inference parameters.]"
+                    else -> cleanResponse
+                }
 
                 val modelMessage = Message(
                     id = UUID.randomUUID().toString(),
                     sessionId = sessionId,
                     branchId = branchId,
                     role = "model",
-                    textContent = cleanResponse,
+                    textContent = responseText,
                     createdAt = System.currentTimeMillis(),
                     tokenCount = (accumulated.length / 4).coerceAtLeast(1),
                     inferenceParamsJson = gson.toJson(state.inferenceParams)
@@ -254,7 +260,7 @@ class ChatViewModel @Inject constructor(
                 }
 
                 // Auto-speak if enabled
-                if (_uiState.value.isAutoSpeaking) {
+                if (_uiState.value.isAutoSpeaking && streamError == null && cleanResponse.isNotEmpty()) {
                     speechService.speak(cleanResponse)
                 }
 
