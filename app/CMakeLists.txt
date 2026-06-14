@@ -1,23 +1,29 @@
 cmake_minimum_required(VERSION 3.22.1)
 project("chatgemma_llama")
 
-# Pre-built libllama.so is downloaded by CI into src/main/jniLibs/<ABI>/
+# Pre-built llama.cpp/ggml libraries are built by CI into src/main/jniLibs/<ABI>/
 set(LLAMA_LIB_DIR "${CMAKE_SOURCE_DIR}/src/main/jniLibs/${ANDROID_ABI}")
 set(LLAMA_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/src/main/cpp/llama_include")
 
-# Import pre-built llama.cpp shared library
-add_library(llama SHARED IMPORTED)
-set_target_properties(llama PROPERTIES
-    IMPORTED_LOCATION "${LLAMA_LIB_DIR}/libllama.so"
-)
+# Import every pre-built shared library found in jniLibs/<ABI>/. Modern
+# llama.cpp (BUILD_SHARED_LIBS=ON) splits its output across multiple .so
+# files (libllama.so, libggml.so, libggml-base.so, libggml-cpu.so,
+# libggml-opencl.so, ...) plus our bundled libOpenCL.so ICD loader. We need
+# all of them on the chatgemma_llama link line since llama_jni.cpp calls
+# ggml_backend_* symbols directly (exported from the ggml libraries, not
+# libllama.so), and the linker enforces -Wl,--no-undefined.
+file(GLOB LLAMA_PREBUILT_LIBS "${LLAMA_LIB_DIR}/*.so")
 
-# Import ggml if present as a separate .so (newer llama.cpp splits the library)
-if(EXISTS "${LLAMA_LIB_DIR}/libggml.so")
-    add_library(ggml SHARED IMPORTED)
-    set_target_properties(ggml PROPERTIES
-        IMPORTED_LOCATION "${LLAMA_LIB_DIR}/libggml.so"
+set(LLAMA_IMPORTED_TARGETS "")
+foreach(LIB_PATH ${LLAMA_PREBUILT_LIBS})
+    get_filename_component(LIB_NAME ${LIB_PATH} NAME_WE)
+    string(REPLACE "lib" "" TARGET_NAME ${LIB_NAME})
+    add_library(${TARGET_NAME} SHARED IMPORTED)
+    set_target_properties(${TARGET_NAME} PROPERTIES
+        IMPORTED_LOCATION ${LIB_PATH}
     )
-endif()
+    list(APPEND LLAMA_IMPORTED_TARGETS ${TARGET_NAME})
+endforeach()
 
 # Our thin JNI bridge (compiles in seconds)
 add_library(chatgemma_llama SHARED
@@ -27,7 +33,7 @@ add_library(chatgemma_llama SHARED
 target_include_directories(chatgemma_llama PRIVATE ${LLAMA_INCLUDE_DIR})
 
 target_link_libraries(chatgemma_llama
-    llama
+    ${LLAMA_IMPORTED_TARGETS}
     android
     log
 )
