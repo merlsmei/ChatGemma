@@ -32,18 +32,38 @@ class LiteRtInferenceEngine @Inject constructor(
     override val isGenerating: StateFlow<Boolean> = _isGenerating.asStateFlow()
 
     private var engine: Engine? = null
+    private var modelPath: String? = null
+    private var usingGpuBackend = false
     private val inferenceMutex = Mutex()
 
     override suspend fun initialize(modelPath: String, params: InferenceParams) {
-        val backend = if (params.gpuLayers > 0) Backend.GPU() else Backend.CPU()
+        this.modelPath = modelPath
+        usingGpuBackend = params.gpuLayers > 0
+        engine = try {
+            createEngine(modelPath, usingGpuBackend)
+        } catch (e: Exception) {
+            if (usingGpuBackend && isOpenClUnavailable(e)) {
+                usingGpuBackend = false
+                createEngine(modelPath, useGpu = false)
+            } else {
+                throw e
+            }
+        }
+        _isReady.value = true
+    }
+
+    private fun createEngine(modelPath: String, useGpu: Boolean): Engine {
+        val backend = if (useGpu) Backend.GPU() else Backend.CPU()
         val config = EngineConfig(
             modelPath = modelPath,
             backend = backend,
             cacheDir = context.cacheDir.path
         )
-        engine = Engine(config).also { it.initialize() }
-        _isReady.value = true
+        return Engine(config).also { it.initialize() }
     }
+
+    private fun isOpenClUnavailable(e: Exception): Boolean =
+        e.message?.contains("OpenCL", ignoreCase = true) == true
 
     override fun generateStream(
         prompt: String,
@@ -59,10 +79,26 @@ class LiteRtInferenceEngine @Inject constructor(
                     temperature = params.temperature.toDouble()
                 )
                 val convConfig = ConversationConfig(samplerConfig = samplerConfig)
-                val conversation = engine!!.createConversation(convConfig)
                 val userMessage = extractLastUserMessage(prompt)
-                conversation.sendMessageAsync(Message.user(userMessage))
-                    .collect { msg -> send(msg.toString()) }
+                try {
+                    engine!!.createConversation(convConfig)
+                        .sendMessageAsync(Message.user(userMessage))
+                        .collect { msg -> send(msg.toString()) }
+                } catch (e: Exception) {
+                    // GPU backend init can succeed but OpenCL still be unavailable
+                    // when the first conversation/generation actually runs. Fall
+                    // back to CPU and retry once.
+                    if (usingGpuBackend && isOpenClUnavailable(e)) {
+                        engine?.close()
+                        usingGpuBackend = false
+                        engine = createEngine(modelPath!!, useGpu = false)
+                        engine!!.createConversation(convConfig)
+                            .sendMessageAsync(Message.user(userMessage))
+                            .collect { msg -> send(msg.toString()) }
+                    } else {
+                        throw e
+                    }
+                }
             } finally {
                 _isGenerating.value = false
             }
