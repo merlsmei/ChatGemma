@@ -10,12 +10,11 @@ import com.google.ai.edge.litertlm.EngineConfig
 import com.google.ai.edge.litertlm.Message
 import com.google.ai.edge.litertlm.SamplerConfig
 import dagger.hilt.android.qualifiers.ApplicationContext
-import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import javax.inject.Inject
@@ -69,7 +68,7 @@ class LiteRtInferenceEngine @Inject constructor(
         prompt: String,
         images: List<Bitmap>,
         params: InferenceParams
-    ): Flow<String> = callbackFlow {
+    ): Flow<String> = channelFlow {
         inferenceMutex.withLock {
             _isGenerating.value = true
             try {
@@ -103,7 +102,6 @@ class LiteRtInferenceEngine @Inject constructor(
                 _isGenerating.value = false
             }
         }
-        awaitClose()
     }
 
     override suspend fun generateFull(
