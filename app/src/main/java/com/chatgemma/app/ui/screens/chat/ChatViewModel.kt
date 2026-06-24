@@ -119,11 +119,15 @@ class ChatViewModel @Inject constructor(
                     modelFormat = model.modelFormat
                 )
                 gemmaEngine.initialize(path, params)
+                val requestedGpu = params.gpuLayers > 0
+                val actualGpu = gemmaEngine.isUsingGpu.value
                 _uiState.update { it.copy(
                     isModelLoaded = true,
-                    modelLoadingError = null,
+                    modelLoadingError = if (requestedGpu && !actualGpu) {
+                        "GPU acceleration isn't supported for this model on this device — using CPU instead."
+                    } else null,
                     inferenceParams = params,
-                    isUsingGpu = params.gpuLayers > 0
+                    isUsingGpu = actualGpu
                 ) }
             } catch (e: Exception) {
                 _uiState.update { it.copy(modelLoadingError = e.message ?: "Failed to load model") }

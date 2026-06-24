@@ -25,10 +25,12 @@ class GemmaInferenceEngineImpl @Inject constructor(
     private var llmInference: LlmInference? = null
     private val _isReady = MutableStateFlow(false)
     private val _isGenerating = MutableStateFlow(false)
+    private val _isUsingGpu = MutableStateFlow(false)
     private val inferenceMutex = Mutex()
 
     override val isReady: StateFlow<Boolean> = _isReady.asStateFlow()
     override val isGenerating: StateFlow<Boolean> = _isGenerating.asStateFlow()
+    override val isUsingGpu: StateFlow<Boolean> = _isUsingGpu.asStateFlow()
 
     override suspend fun initialize(modelPath: String, params: InferenceParams) {
         withContext(Dispatchers.IO) {

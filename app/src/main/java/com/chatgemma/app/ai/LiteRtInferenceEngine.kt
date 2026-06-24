@@ -32,8 +32,10 @@ class LiteRtInferenceEngine @Inject constructor(
 
     private val _isReady = MutableStateFlow(false)
     private val _isGenerating = MutableStateFlow(false)
+    private val _isUsingGpu = MutableStateFlow(false)
     override val isReady: StateFlow<Boolean> = _isReady.asStateFlow()
     override val isGenerating: StateFlow<Boolean> = _isGenerating.asStateFlow()
+    override val isUsingGpu: StateFlow<Boolean> = _isUsingGpu.asStateFlow()
 
     private var engine: Engine? = null
     private var modelPath: String? = null
@@ -42,16 +44,21 @@ class LiteRtInferenceEngine @Inject constructor(
 
     override suspend fun initialize(modelPath: String, params: InferenceParams) {
         this.modelPath = modelPath
-        usingGpuBackend = params.gpuLayers > 0
+        setGpuBackend(params.gpuLayers > 0)
         // Engine.initialize() is a blocking JNI call that can take several seconds;
         // it must not run on the main thread (the caller uses viewModelScope/Main).
         engine = withContext(Dispatchers.IO) {
             try {
                 createEngine(modelPath, usingGpuBackend)
             } catch (e: Exception) {
-                if (usingGpuBackend && isOpenClUnavailable(e)) {
-                    Log.w(TAG, "OpenCL unavailable during init; falling back to CPU", e)
-                    usingGpuBackend = false
+                if (usingGpuBackend) {
+                    // Any GPU engine-creation failure (OpenCL missing, or a GPU-delegate
+                    // kernel-compilation failure like "Failed to create engine: INTERNAL
+                    // ERROR ... llm_litert_compiled_model_executor.cc") is treated the same
+                    // way: retry on CPU rather than leaving the model unloadable.
+                    Log.w(TAG, "GPU engine creation failed (${e.javaClass.simpleName}: ${e.message}); " +
+                        "falling back to CPU", e)
+                    setGpuBackend(false)
                     createEngine(modelPath, useGpu = false)
                 } else {
                     throw e
@@ -59,6 +66,11 @@ class LiteRtInferenceEngine @Inject constructor(
             }
         }
         _isReady.value = true
+    }
+
+    private fun setGpuBackend(useGpu: Boolean) {
+        usingGpuBackend = useGpu
+        _isUsingGpu.value = useGpu
     }
 
     private fun createEngine(modelPath: String, useGpu: Boolean): Engine {
@@ -137,7 +149,7 @@ class LiteRtInferenceEngine @Inject constructor(
                     if (usingGpuBackend && isOpenClUnavailable(e)) {
                         Log.w(TAG, "OpenCL unavailable during generation; rebuilding engine on CPU", e)
                         engine?.close()
-                        usingGpuBackend = false
+                        setGpuBackend(false)
                         engine = createEngine(modelPath!!, useGpu = false)
                         if (stream() == null) {
                             throw IllegalStateException("LiteRT CPU generation timed out.")

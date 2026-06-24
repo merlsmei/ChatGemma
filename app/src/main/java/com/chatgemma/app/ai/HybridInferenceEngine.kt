@@ -25,9 +25,11 @@ class HybridInferenceEngine @Inject constructor(
     private var active: GemmaInferenceEngine? = null
     private val _isReady      = MutableStateFlow(false)
     private val _isGenerating = MutableStateFlow(false)
+    private val noGpu         = MutableStateFlow(false).asStateFlow()
 
     override val isReady:      StateFlow<Boolean> = _isReady.asStateFlow()
     override val isGenerating: StateFlow<Boolean> = _isGenerating.asStateFlow()
+    override val isUsingGpu:   StateFlow<Boolean> get() = active?.isUsingGpu ?: noGpu
 
     override suspend fun initialize(modelPath: String, params: InferenceParams) {
         val engine = when {

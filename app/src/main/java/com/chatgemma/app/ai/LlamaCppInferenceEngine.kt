@@ -22,6 +22,7 @@ class LlamaCppInferenceEngine @Inject constructor() : GemmaInferenceEngine {
     private var modelHandle: Long = 0L
     private val _isReady = MutableStateFlow(false)
     private val _isGenerating = MutableStateFlow(false)
+    private val _isUsingGpu = MutableStateFlow(false)
     private val inferenceMutex = Mutex()
 
     @Volatile
@@ -29,6 +30,7 @@ class LlamaCppInferenceEngine @Inject constructor() : GemmaInferenceEngine {
 
     override val isReady: StateFlow<Boolean> = _isReady.asStateFlow()
     override val isGenerating: StateFlow<Boolean> = _isGenerating.asStateFlow()
+    override val isUsingGpu: StateFlow<Boolean> = _isUsingGpu.asStateFlow()
 
     companion object {
         val available: Boolean by lazy {
@@ -65,6 +67,7 @@ class LlamaCppInferenceEngine @Inject constructor() : GemmaInferenceEngine {
                 "The model format may be unsupported. Try a different GGUF quantization."
             )
             modelHandle = handle
+            _isUsingGpu.value = params.gpuLayers > 0
             _isReady.value = true
         }
     }
