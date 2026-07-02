@@ -8,6 +8,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.chatgemma.app.ui.screens.chat.ChatScreen
+import com.chatgemma.app.ui.screens.imagegen.ImageGenScreen
 import com.chatgemma.app.ui.screens.models.ModelManagerScreen
 import com.chatgemma.app.ui.screens.sessions.SessionListScreen
 import com.chatgemma.app.ui.screens.settings.SettingsScreen
@@ -27,7 +28,8 @@ fun ChatGemmaNavHost(
                     navController.navigate(Screen.Chat().createRoute(sessionId, branchId))
                 },
                 onSettingsClick = { navController.navigate(Screen.Settings.route) },
-                onModelsClick = { navController.navigate(Screen.ModelManager.route) }
+                onModelsClick = { navController.navigate(Screen.ModelManager.route) },
+                onImageGenClick = { navController.navigate(Screen.ImageGen.route) }
             )
         }
 
@@ -58,6 +60,12 @@ fun ChatGemmaNavHost(
 
         composable(Screen.ModelManager.route) {
             ModelManagerScreen(
+                onNavigateUp = { navController.popBackStack() }
+            )
+        }
+
+        composable(Screen.ImageGen.route) {
+            ImageGenScreen(
                 onNavigateUp = { navController.popBackStack() }
             )
         }

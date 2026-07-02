@@ -7,6 +7,7 @@ sealed class Screen(val route: String) {
         fun createRoute(sessionId: String, branchId: String) = "chat/$sessionId/$branchId"
     }
     data object ModelManager : Screen("models")
+    data object ImageGen : Screen("imagegen")
     data class TopicManager(val sessionId: String = "{sessionId}") :
         Screen("topics/{sessionId}") {
         fun createRoute(sessionId: String) = "topics/$sessionId"

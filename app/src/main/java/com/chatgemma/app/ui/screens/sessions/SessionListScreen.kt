@@ -24,6 +24,7 @@ fun SessionListScreen(
     onSessionClick: (sessionId: String, branchId: String) -> Unit,
     onSettingsClick: () -> Unit,
     onModelsClick: () -> Unit,
+    onImageGenClick: () -> Unit,
     viewModel: SessionListViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -40,6 +41,9 @@ fun SessionListScreen(
             TopAppBar(
                 title = { Text("ChatGemma") },
                 actions = {
+                    IconButton(onClick = onImageGenClick) {
+                        Icon(Icons.Default.Palette, "Image Studio")
+                    }
                     IconButton(onClick = onModelsClick) {
                         Icon(Icons.Default.Memory, "Models")
                     }

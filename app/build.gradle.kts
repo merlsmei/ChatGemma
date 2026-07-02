@@ -106,6 +106,9 @@ dependencies {
     // MediaPipe GenAI (Gemma)
     implementation(libs.mediapipe.tasks.genai)
 
+    // MediaPipe Image Generator (on-device Stable Diffusion, text→image + conditioned)
+    implementation(libs.mediapipe.tasks.vision.image.generator)
+
     // LiteRT-LM (Google AI Edge, OpenCL GPU)
     implementation(libs.litert.lm.android)
 
