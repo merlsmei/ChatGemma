@@ -2,6 +2,7 @@ package com.chatgemma.app.ai
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.util.Log
 import com.chatgemma.app.domain.model.InferenceParams
 import com.google.mediapipe.tasks.genai.llminference.LlmInference
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -25,28 +26,51 @@ class GemmaInferenceEngineImpl @Inject constructor(
     private var llmInference: LlmInference? = null
     private val _isReady = MutableStateFlow(false)
     private val _isGenerating = MutableStateFlow(false)
+    private val _isUsingGpu = MutableStateFlow(false)
     private val inferenceMutex = Mutex()
 
     override val isReady: StateFlow<Boolean> = _isReady.asStateFlow()
     override val isGenerating: StateFlow<Boolean> = _isGenerating.asStateFlow()
+    override val isUsingGpu: StateFlow<Boolean> = _isUsingGpu.asStateFlow()
 
     override suspend fun initialize(modelPath: String, params: InferenceParams) {
         withContext(Dispatchers.IO) {
+            release()
+            val wantGpu = params.gpuLayers > 0
             try {
-                release()
-                // tasks-genai:0.10.20 builder only exposes setModelPath and setMaxTokens;
-                // temperature/topK/randomSeed are not available on this builder version.
-                val options = LlmInference.LlmInferenceOptions.builder()
-                    .setModelPath(modelPath)
-                    .setMaxTokens(params.maxTokens)
-                    .build()
-                llmInference = LlmInference.createFromOptions(context, options)
+                llmInference = createEngine(modelPath, params, useGpu = wantGpu)
+                _isUsingGpu.value = wantGpu
                 _isReady.value = true
             } catch (e: Exception) {
-                _isReady.value = false
-                throw e
+                if (wantGpu) {
+                    // GPU backend selection can fail at engine-creation time (unsupported
+                    // model/device combo); fall back to CPU rather than leaving it unloadable.
+                    Log.w(TAG, "GPU engine creation failed (${e.javaClass.simpleName}: ${e.message}); " +
+                        "falling back to CPU", e)
+                    try {
+                        llmInference = createEngine(modelPath, params, useGpu = false)
+                        _isUsingGpu.value = false
+                        _isReady.value = true
+                    } catch (e2: Exception) {
+                        _isReady.value = false
+                        throw e2
+                    }
+                } else {
+                    _isReady.value = false
+                    throw e
+                }
             }
         }
+    }
+
+    private fun createEngine(modelPath: String, params: InferenceParams, useGpu: Boolean): LlmInference {
+        Log.i(TAG, "Creating MediaPipe LLM engine (backend=${if (useGpu) "GPU" else "CPU"})")
+        val options = LlmInference.LlmInferenceOptions.builder()
+            .setModelPath(modelPath)
+            .setMaxTokens(params.maxTokens)
+            .setPreferredBackend(if (useGpu) LlmInference.Backend.GPU else LlmInference.Backend.CPU)
+            .build()
+        return LlmInference.createFromOptions(context, options)
     }
 
     override fun generateStream(
@@ -94,5 +118,9 @@ class GemmaInferenceEngineImpl @Inject constructor(
 
     override suspend fun countTokens(text: String): Int {
         return (text.length / 4).coerceAtLeast(1)
+    }
+
+    private companion object {
+        const val TAG = "GemmaEngine"
     }
 }

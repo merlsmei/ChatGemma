@@ -8,6 +8,8 @@ import kotlinx.coroutines.flow.StateFlow
 interface GemmaInferenceEngine {
     val isReady: StateFlow<Boolean>
     val isGenerating: StateFlow<Boolean>
+    /** Whether the currently loaded model is actually running on GPU (reflects fallback, not just the request). */
+    val isUsingGpu: StateFlow<Boolean>
 
     suspend fun initialize(modelPath: String, params: InferenceParams)
     fun generateStream(prompt: String, images: List<Bitmap> = emptyList(), params: InferenceParams): Flow<String>

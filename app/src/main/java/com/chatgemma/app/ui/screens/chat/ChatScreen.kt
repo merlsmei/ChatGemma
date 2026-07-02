@@ -36,6 +36,7 @@ fun ChatScreen(
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
+    val snackbarHostState = remember { SnackbarHostState() }
 
     // Auto-scroll to bottom on new messages
     LaunchedEffect(state.messages.size, state.streamingText) {
@@ -57,6 +58,7 @@ fun ChatScreen(
     ) { uri: Uri? -> uri?.let { viewModel.attachVideo(it) } }
 
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = { Text(state.sessionTitle, maxLines = 1) },
@@ -255,7 +257,7 @@ fun ChatScreen(
     // Error snackbar
     state.error?.let { error ->
         LaunchedEffect(error) {
-            // In production, show a Snackbar here
+            snackbarHostState.showSnackbar(error)
             viewModel.dismissError()
         }
     }

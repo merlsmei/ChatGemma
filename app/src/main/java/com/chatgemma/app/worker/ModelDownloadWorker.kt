@@ -63,7 +63,8 @@ class ModelDownloadWorker @AssistedInject constructor(
     ): String = withContext(Dispatchers.IO) {
         val modelsDir = File(context.getExternalFilesDir(null) ?: context.filesDir, "models")
             .also { it.mkdirs() }
-        val ext = url.substringAfterLast('.').takeIf { it.length in 2..5 } ?: "task"
+        val ext = url.substringBefore('?').substringBefore('#')
+            .substringAfterLast('.').takeIf { it.length in 2..20 } ?: "task"
         val fileName = "${modelId.replace("/", "_")}.$ext"
         val destFile = File(modelsDir, fileName)
 

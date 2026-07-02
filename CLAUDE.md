@@ -31,13 +31,19 @@ Modern llama.cpp distributes headers across multiple directories. The CI step co
 
 llama.cpp no longer publishes pre-built Android `.so` files. The workflow builds from source:
 1. Clone pinned tag (`b8763`) — **do not use unpinned HEAD**; upstream changes break CI
-2. Install Vulkan C++ headers from `KhronosGroup/Vulkan-Hpp` (the NDK and `vulkan-headers` apt package only have C headers; ggml-vulkan.cpp needs `vulkan.hpp`)
-3. CMake configure with NDK toolchain, `BUILD_SHARED_LIBS=ON`, `GGML_VULKAN=ON`, no tests/examples/Metal/CUDA
-4. Copy `.so` outputs to `app/src/main/jniLibs/arm64-v8a/`
+2. Install OpenCL headers (`KhronosGroup/OpenCL-Headers`) into the NDK sysroot, then build `KhronosGroup/OpenCL-ICD-Loader` against the NDK toolchain to produce `libOpenCL.so` (also installed into the NDK sysroot for linking)
+3. CMake configure with NDK toolchain, `BUILD_SHARED_LIBS=ON`, `GGML_OPENCL=ON` + `GGML_OPENCL_USE_ADRENO_KERNELS=ON` + `GGML_OPENCL_EMBED_KERNELS=ON`, `GGML_VULKAN=OFF`, no tests/examples/Metal/CUDA
+4. Copy `.so` outputs (including `libggml-opencl.so`) to `app/src/main/jniLibs/arm64-v8a/`, plus the built `libOpenCL.so` ICD loader (so `libggml-opencl.so`'s runtime dependency resolves and dispatches to the on-device Adreno driver)
 5. Copy headers to `app/src/main/cpp/llama_include/`
-6. Cache both by `llama_jni.cpp` hash to avoid rebuilding on every push
+6. Cache by `llama_jni.cpp` hash to avoid rebuilding on every push
 
-**To update llama.cpp version:** Change `LLAMA_CPP_TAG` in `build-release.yml` and bump the cache key suffix (`vulkan-v2` → `vulkan-v3` etc.) to force a rebuild.
+**Why OpenCL instead of Vulkan:** Vulkan GPU offload on Qualcomm Adreno GPUs (e.g. Adreno 750 in Snapdragon 8 Gen 3 / Xiaomi 14 Ultra) is known to be unreliable — model load failures and poor performance. llama.cpp's `GGML_OPENCL` backend with `GGML_OPENCL_USE_ADRENO_KERNELS` is the Qualcomm-recommended GPU path and the one actually validated on Adreno.
+
+**To update llama.cpp version:** Change `LLAMA_CPP_TAG` in `build-release.yml` and bump the cache key suffix (`opencl-v1` → `opencl-v2` etc.) to force a rebuild.
+
+### GPU Backend Diagnostics
+
+`nativeInit()` in `llama_jni.cpp` calls `ggml_backend_load_all()` and logs every registered `ggml_backend_dev_t` (name, description, type) via `LOGI`. Check `adb logcat -s LlamaCpp` after model load to confirm whether the OpenCL/Adreno GPU device registered, or whether only CPU is available.
 
 ### Fresh Context Per Generation
 

@@ -4,6 +4,7 @@
 #include <cstring>
 #include <android/log.h>
 #include "llama.h"
+#include "ggml-backend.h"
 
 #define TAG "LlamaCpp"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  TAG, __VA_ARGS__)
@@ -22,6 +23,17 @@ extern "C" {
 JNIEXPORT void JNICALL
 Java_com_chatgemma_app_ai_LlamaCppInferenceEngine_nativeInit(JNIEnv*, jobject) {
     llama_backend_init();
+    ggml_backend_load_all();
+
+    size_t nDevices = ggml_backend_dev_count();
+    LOGI("GGML backend devices: %zu", nDevices);
+    for (size_t i = 0; i < nDevices; ++i) {
+        ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+        LOGI("  [%zu] %s — %s (type=%d)", i,
+             ggml_backend_dev_name(dev),
+             ggml_backend_dev_description(dev),
+             (int)ggml_backend_dev_type(dev));
+    }
 }
 
 JNIEXPORT jlong JNICALL
@@ -67,13 +79,17 @@ Java_com_chatgemma_app_ai_LlamaCppInferenceEngine_nativeGenerate(
     const struct llama_vocab* vocab = llama_model_get_vocab(h->model);
     const char* prompt = env->GetStringUTFChars(jPrompt, nullptr);
 
-    // Tokenise (first call with nullptr to get count)
+    // The prompt text already starts with a literal "<bos>" (added by PromptBuilder),
+    // which parse_special=true will convert to the BOS token. Passing add_special=true
+    // as well would *also* auto-prepend BOS, producing a duplicate-BOS sequence that
+    // can make Gemma immediately emit an end-of-turn token (empty response).
     int nPrompt = -llama_tokenize(vocab, prompt, (int32_t)strlen(prompt),
-                                  nullptr, 0, /*add_special=*/true, /*parse_special=*/true);
+                                  nullptr, 0, /*add_special=*/false, /*parse_special=*/true);
     std::vector<llama_token> tokens(nPrompt);
     llama_tokenize(vocab, prompt, (int32_t)strlen(prompt),
-                   tokens.data(), nPrompt, true, true);
+                   tokens.data(), nPrompt, false, true);
     env->ReleaseStringUTFChars(jPrompt, prompt);
+    LOGI("Prompt tokenized: %d tokens", nPrompt);
 
     // Evaluate prompt tokens
     llama_batch batch = llama_batch_get_one(tokens.data(), (int32_t)tokens.size());
@@ -97,6 +113,7 @@ Java_com_chatgemma_app_ai_LlamaCppInferenceEngine_nativeGenerate(
     // Generate tokens
     std::string output;
     output.reserve(512);
+    int nGenerated = 0;
     for (int i = 0; i < maxNewTokens; ++i) {
         llama_token tok = llama_sampler_sample(sampler, ctx, -1);
         llama_sampler_accept(sampler, tok);
@@ -105,10 +122,12 @@ Java_com_chatgemma_app_ai_LlamaCppInferenceEngine_nativeGenerate(
         char piece[256];
         int n = llama_token_to_piece(vocab, tok, piece, sizeof(piece), 0, true);
         if (n > 0) output.append(piece, n);
+        nGenerated++;
 
         llama_batch next = llama_batch_get_one(&tok, 1);
         if (llama_decode(ctx, next) != 0) break;
     }
+    if (nGenerated == 0) LOGI("Generation produced 0 tokens (immediate EOG)");
 
     llama_sampler_free(sampler);
     llama_free(ctx);
@@ -141,17 +160,22 @@ Java_com_chatgemma_app_ai_LlamaCppInferenceEngine_nativeGenerateStreaming(
     const struct llama_vocab* vocab = llama_model_get_vocab(h->model);
     const char* prompt = env->GetStringUTFChars(jPrompt, nullptr);
 
+    // See nativeGenerate: prompt text already contains a literal "<bos>", so
+    // add_special=false avoids a duplicate-BOS sequence at the start.
     int nPrompt = -llama_tokenize(vocab, prompt, (int32_t)strlen(prompt),
-                                  nullptr, 0, true, true);
+                                  nullptr, 0, false, true);
     std::vector<llama_token> tokens(nPrompt);
     llama_tokenize(vocab, prompt, (int32_t)strlen(prompt),
-                   tokens.data(), nPrompt, true, true);
+                   tokens.data(), nPrompt, false, true);
     env->ReleaseStringUTFChars(jPrompt, prompt);
+    LOGI("Prompt tokenized: %d tokens", nPrompt);
 
     llama_batch batch = llama_batch_get_one(tokens.data(), (int32_t)tokens.size());
     if (llama_decode(ctx, batch) != 0) {
         LOGE("Prompt decode failed");
         llama_free(ctx);
+        jclass excCls = env->FindClass("java/lang/RuntimeException");
+        env->ThrowNew(excCls, "llama.cpp: prompt decode failed");
         return;
     }
 
@@ -165,6 +189,7 @@ Java_com_chatgemma_app_ai_LlamaCppInferenceEngine_nativeGenerateStreaming(
         llama_sampler_chain_add(sampler, llama_sampler_init_dist(42));
     }
 
+    int nGenerated = 0;
     for (int i = 0; i < maxNewTokens; ++i) {
         llama_token tok = llama_sampler_sample(sampler, ctx, -1);
         llama_sampler_accept(sampler, tok);
@@ -179,10 +204,12 @@ Java_com_chatgemma_app_ai_LlamaCppInferenceEngine_nativeGenerateStreaming(
             env->CallVoidMethod(thiz, onTokenId, jPiece);
             env->DeleteLocalRef(jPiece);
         }
+        nGenerated++;
 
         llama_batch next = llama_batch_get_one(&tok, 1);
         if (llama_decode(ctx, next) != 0) break;
     }
+    if (nGenerated == 0) LOGI("Generation produced 0 tokens (immediate EOG)");
 
     llama_sampler_free(sampler);
     llama_free(ctx);

@@ -25,15 +25,19 @@ class HybridInferenceEngine @Inject constructor(
     private var active: GemmaInferenceEngine? = null
     private val _isReady      = MutableStateFlow(false)
     private val _isGenerating = MutableStateFlow(false)
+    private val noGpu         = MutableStateFlow(false).asStateFlow()
 
     override val isReady:      StateFlow<Boolean> = _isReady.asStateFlow()
     override val isGenerating: StateFlow<Boolean> = _isGenerating.asStateFlow()
+    override val isUsingGpu:   StateFlow<Boolean> get() = active?.isUsingGpu ?: noGpu
 
     override suspend fun initialize(modelPath: String, params: InferenceParams) {
         val engine = when {
             modelPath.endsWith(".gguf", ignoreCase = true) ||
             modelPath.endsWith(".ggml", ignoreCase = true) -> llamaCppEngine
             modelPath.endsWith(".litertlm", ignoreCase = true) -> liteRtEngine
+            params.modelFormat.equals("LiteRT", ignoreCase = true) -> liteRtEngine
+            params.modelFormat.equals("GGUF", ignoreCase = true) -> llamaCppEngine
             else -> mediaPipeEngine
         }
         active = engine
