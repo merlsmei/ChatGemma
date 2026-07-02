@@ -30,6 +30,9 @@ class HybridInferenceEngine @Inject constructor(
     override val isReady:      StateFlow<Boolean> = _isReady.asStateFlow()
     override val isGenerating: StateFlow<Boolean> = _isGenerating.asStateFlow()
     override val isUsingGpu:   StateFlow<Boolean> get() = active?.isUsingGpu ?: noGpu
+    override val visionCapable: Boolean get() = active?.visionCapable ?: false
+
+    override fun imageMarker(): String? = active?.imageMarker()
 
     override suspend fun initialize(modelPath: String, params: InferenceParams) {
         val engine = when {

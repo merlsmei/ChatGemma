@@ -206,14 +206,29 @@ class ChatViewModel @Inject constructor(
                     bitmaps.addAll(frames)
                 }
 
-                // Build prompt with image descriptions so the model knows what's attached
-                val imageDesc = bitmaps.mapIndexed { i, bmp ->
-                    "[Image ${i + 1}: ${bmp.width}x${bmp.height}px]"
-                }.joinToString("\n")
-                val promptUserMessage = if (imageDesc.isNotEmpty()) {
-                    userMessage.copy(textContent = "$imageDesc\n${userMessage.textContent ?: ""}")
-                } else {
-                    userMessage
+                // Vision-capable engines consume the bitmaps directly. Engines that
+                // need an in-prompt marker (llama.cpp mtmd) get one marker per image;
+                // LiteRT receives images as message contents, so the text stays as-is.
+                // Only non-vision models fall back to a descriptive placeholder.
+                // The marker only goes into this transient prompt copy — the persisted
+                // message keeps the original text, so old markers never outnumber
+                // bitmaps on later turns.
+                val marker = gemmaEngine.imageMarker()
+                val promptUserMessage = when {
+                    bitmaps.isEmpty() -> userMessage
+                    marker != null -> userMessage.copy(
+                        textContent = buildString {
+                            repeat(bitmaps.size) { append(marker).append('\n') }
+                            append(userMessage.textContent ?: "")
+                        }
+                    )
+                    gemmaEngine.visionCapable -> userMessage
+                    else -> {
+                        val imageDesc = bitmaps.mapIndexed { i, bmp ->
+                            "[Image ${i + 1}: ${bmp.width}x${bmp.height}px]"
+                        }.joinToString("\n")
+                        userMessage.copy(textContent = "$imageDesc\n${userMessage.textContent ?: ""}")
+                    }
                 }
                 val prompt = PromptBuilder.buildChatPrompt(
                     messageCache + promptUserMessage
@@ -392,7 +407,11 @@ class ChatViewModel @Inject constructor(
         return try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                 val source = ImageDecoder.createSource(context.contentResolver, uri)
-                ImageDecoder.decodeBitmap(source)
+                // Software allocation: the engines need pixel access (getPixels /
+                // compress), which Config.HARDWARE bitmaps don't allow.
+                ImageDecoder.decodeBitmap(source) { decoder, _, _ ->
+                    decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+                }
             } else {
                 @Suppress("DEPRECATION")
                 MediaStore.Images.Media.getBitmap(context.contentResolver, uri)

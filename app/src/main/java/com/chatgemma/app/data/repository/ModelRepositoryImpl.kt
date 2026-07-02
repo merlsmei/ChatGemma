@@ -321,10 +321,24 @@ class ModelRepositoryImpl @Inject constructor(
             ?: siblings.firstOrNull { it.rfilename.endsWith(".task") }
 
     /**
-     * Search HuggingFace for a community GGUF conversion of the given model.
-     * Returns (communityModelId, sibling) or null if none found.
+     * Pick the multimodal projector shipped alongside a vision GGUF
+     * (e.g. mmproj-model-f16.gguf in ggml-org/gemma-3-4b-it-GGUF).
+     * Prefers f16 over quantized/bf16 variants.
      */
-    private suspend fun findCommunityGguf(modelId: String): Pair<String, com.chatgemma.app.data.remote.dto.HfSibling>? {
+    private fun findMmprojSibling(siblings: List<com.chatgemma.app.data.remote.dto.HfSibling>): com.chatgemma.app.data.remote.dto.HfSibling? {
+        val candidates = siblings.filter {
+            it.rfilename.substringAfterLast('/').contains("mmproj", ignoreCase = true) &&
+                it.rfilename.endsWith(".gguf", ignoreCase = true)
+        }
+        return candidates.firstOrNull { it.rfilename.contains("f16", ignoreCase = true) }
+            ?: candidates.firstOrNull()
+    }
+
+    /**
+     * Search HuggingFace for a community GGUF conversion of the given model.
+     * Returns (communityModelId, sibling, all siblings) or null if none found.
+     */
+    private suspend fun findCommunityGguf(modelId: String): Triple<String, com.chatgemma.app.data.remote.dto.HfSibling, List<com.chatgemma.app.data.remote.dto.HfSibling>>? {
         val baseName = modelId.substringAfterLast("/")
         val results = try {
             huggingFaceApi.searchModels(
@@ -338,7 +352,7 @@ class ModelRepositoryImpl @Inject constructor(
             if (dto.modelId == modelId) continue          // skip the original
             val info = try { huggingFaceApi.getModelFiles(dto.modelId) } catch (_: Exception) { continue }
             val file = findDownloadableFile(info.siblings)
-            if (file != null) return dto.modelId to file
+            if (file != null) return Triple(dto.modelId, file, info.siblings)
         }
         return null
     }
@@ -354,8 +368,8 @@ class ModelRepositoryImpl @Inject constructor(
 
             // Try the original repo first, then fall back to community GGUF conversions
             val directFile = findDownloadableFile(modelInfo.siblings)
-            val (downloadRepoId, downloadFile) = if (directFile != null) {
-                modelId to directFile
+            val (downloadRepoId, downloadFile, repoSiblings) = if (directFile != null) {
+                Triple(modelId, directFile, modelInfo.siblings)
             } else {
                 findCommunityGguf(modelId)
                     ?: throw IllegalStateException(
@@ -364,12 +378,20 @@ class ModelRepositoryImpl @Inject constructor(
             }
 
             val downloadUrl = "https://huggingface.co/$downloadRepoId/resolve/main/${downloadFile.rfilename}"
+            // Vision GGUFs ship a separate mmproj projector; grab it so llama.cpp
+            // can accept image input (ignored for .litertlm/.task files).
+            val mmprojUrl = if (downloadFile.rfilename.endsWith(".gguf", ignoreCase = true)) {
+                findMmprojSibling(repoSiblings)?.let {
+                    "https://huggingface.co/$downloadRepoId/resolve/main/${it.rfilename}"
+                }
+            } else null
 
             modelVersionDao.getModelById(modelId) ?: return@withContext
 
             val inputData = Data.Builder()
                 .putString(ModelDownloadWorker.KEY_MODEL_ID, modelId)
                 .putString(ModelDownloadWorker.KEY_DOWNLOAD_URL, downloadUrl)
+                .putString(ModelDownloadWorker.KEY_MMPROJ_URL, mmprojUrl)
                 .build()
 
             val constraints = Constraints.Builder()
@@ -389,7 +411,10 @@ class ModelRepositoryImpl @Inject constructor(
 
     override suspend fun deleteModel(modelId: String) {
         val model = modelVersionDao.getModelById(modelId) ?: return
-        model.localPath?.let { path -> File(path).takeIf { it.exists() }?.delete() }
+        model.localPath?.let { path ->
+            File(path).takeIf { it.exists() }?.delete()
+            File("$path.mmproj.gguf").takeIf { it.exists() }?.delete()
+        }
         modelVersionDao.markDeleted(modelId)
     }
 

@@ -22,10 +22,20 @@ const struct llama_vocab* vocab = llama_model_get_vocab(model);
 
 ### Header Layout
 
-Modern llama.cpp distributes headers across multiple directories. The CI step copies from all three to `app/src/main/cpp/llama_include/`:
+Modern llama.cpp distributes headers across multiple directories. The CI step copies from all of these to `app/src/main/cpp/llama_include/`:
 - `llama_src/` (root level — older layout)
 - `llama_src/include/` (newer layout — `llama.h` lives here)
 - `llama_src/ggml/include/` (`ggml.h`, `ggml-cpu.h`, `ggml-alloc.h`, `ggml-backend.h`, etc.)
+- `llama_src/tools/mtmd/` (`mtmd.h`, `mtmd-helper.h` — multimodal)
+
+### Multimodal (mtmd) Vision Support
+
+GGUF vision models need a separate multimodal projector file (`mmproj-*.gguf`). Key facts:
+- `libmtmd` lives in `tools/mtmd`; building it needs `-DLLAMA_BUILD_COMMON=ON -DLLAMA_BUILD_TOOLS=ON` and `-DLLAMA_CURL=OFF` (common would otherwise require libcurl, absent in the NDK). CI builds only the `mtmd` CMake target (`cmake --build … --target mtmd`) which pulls in ggml + llama but skips tool executables.
+- The mmproj sidecar convention is `<modelfile>.mmproj.gguf` next to the model file. `ModelDownloadWorker` downloads it (best-effort) when the HF repo has an `mmproj-*.gguf` sibling; `LlamaCppInferenceEngine` auto-loads it when present.
+- The prompt must contain one `<__media__>` marker (`mtmd_default_marker()`) per attached image; `mtmd_tokenize` + `mtmd_helper_eval_chunks` handle encode/decode of mixed text/image chunks. ChatViewModel injects markers only into the transient prompt copy, never into persisted messages (marker count must equal bitmap count).
+- Images cross JNI as raw RGB byte arrays (`width*height*3`), converted to `mtmd_bitmap` natively. Bitmaps must be software-allocated (`ImageDecoder.ALLOCATOR_SOFTWARE`) — `Config.HARDWARE` bitmaps can't be read back.
+- app/CMakeLists.txt needs no changes for new .so files — it globs and links every `jniLibs/<ABI>/*.so`.
 
 ### CI Build Strategy
 

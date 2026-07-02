@@ -45,6 +45,20 @@ class ModelDownloadWorker @AssistedInject constructor(
                 setProgressAsync(workDataOf(KEY_PROGRESS to progress))
                 setForeground(createForegroundInfo("Downloading $modelId", progress))
             }
+            // Vision GGUF models ship a separate multimodal projector; fetch it as a
+            // sidecar next to the model. Best-effort: without it the model still
+            // works text-only, so a projector failure must not fail the whole job.
+            inputData.getString(KEY_MMPROJ_URL)?.let { mmprojUrl ->
+                val mmprojFile = File("$localPath.mmproj.gguf")
+                try {
+                    setForeground(createForegroundInfo("Downloading vision projector", 0))
+                    downloadToFile(mmprojUrl, mmprojFile) { progress ->
+                        setForeground(createForegroundInfo("Downloading vision projector", progress))
+                    }
+                } catch (e: Exception) {
+                    mmprojFile.delete() // don't leave a partial projector behind
+                }
+            }
             modelRepository.markDownloaded(modelId, localPath)
             Result.success(workDataOf(KEY_LOCAL_PATH to localPath))
         } catch (e: java.io.IOException) {
@@ -60,14 +74,20 @@ class ModelDownloadWorker @AssistedInject constructor(
         modelId: String,
         url: String,
         onProgress: suspend (Int) -> Unit
-    ): String = withContext(Dispatchers.IO) {
+    ): String {
         val modelsDir = File(context.getExternalFilesDir(null) ?: context.filesDir, "models")
             .also { it.mkdirs() }
         val ext = url.substringBefore('?').substringBefore('#')
             .substringAfterLast('.').takeIf { it.length in 2..20 } ?: "task"
         val fileName = "${modelId.replace("/", "_")}.$ext"
-        val destFile = File(modelsDir, fileName)
+        return downloadToFile(url, File(modelsDir, fileName), onProgress)
+    }
 
+    private suspend fun downloadToFile(
+        url: String,
+        destFile: File,
+        onProgress: suspend (Int) -> Unit
+    ): String = withContext(Dispatchers.IO) {
         // Resume: check for existing partial download
         val existingBytes = if (destFile.exists()) destFile.length() else 0L
 
@@ -141,6 +161,7 @@ class ModelDownloadWorker @AssistedInject constructor(
     companion object {
         const val KEY_MODEL_ID = "model_id"
         const val KEY_DOWNLOAD_URL = "download_url"
+        const val KEY_MMPROJ_URL = "mmproj_url"
         const val KEY_PROGRESS = "progress"
         const val KEY_ERROR = "error"
         const val KEY_LOCAL_PATH = "local_path"

@@ -20,6 +20,7 @@ import javax.inject.Singleton
 class LlamaCppInferenceEngine @Inject constructor() : GemmaInferenceEngine {
 
     private var modelHandle: Long = 0L
+    private var hasVision = false
     private val _isReady = MutableStateFlow(false)
     private val _isGenerating = MutableStateFlow(false)
     private val _isUsingGpu = MutableStateFlow(false)
@@ -37,7 +38,19 @@ class LlamaCppInferenceEngine @Inject constructor() : GemmaInferenceEngine {
             try { System.loadLibrary("chatgemma_llama"); true }
             catch (_: UnsatisfiedLinkError) { false }
         }
+
+        // Marker consumed by llama.cpp's mtmd_tokenize (mtmd_default_marker())
+        const val MEDIA_MARKER = "<__media__>"
+        // Vision encoders resize to ~896px anyway; cap the RGB buffer we ship over JNI
+        private const val MAX_IMAGE_DIM = 1024
+
+        /** Sidecar mmproj file convention: `<model>.gguf` → `<model>.gguf.mmproj.gguf`. */
+        fun mmprojFileFor(modelPath: String) = java.io.File("$modelPath.mmproj.gguf")
     }
+
+    override val visionCapable: Boolean get() = hasVision
+
+    override fun imageMarker(): String? = if (hasVision) MEDIA_MARKER else null
 
     override suspend fun initialize(modelPath: String, params: InferenceParams) {
         withContext(Dispatchers.IO) {
@@ -61,12 +74,14 @@ class LlamaCppInferenceEngine @Inject constructor() : GemmaInferenceEngine {
             nativeInit()
             val nCtx     = params.maxTokens.coerceIn(512, 8192)
             val nThreads = Runtime.getRuntime().availableProcessors().coerceAtMost(8)
-            val handle = nativeLoadModel(modelPath, nCtx, nThreads, params.gpuLayers)
+            val mmproj = mmprojFileFor(modelPath).takeIf { it.exists() && it.canRead() }
+            val handle = nativeLoadModel(modelPath, nCtx, nThreads, params.gpuLayers, mmproj?.absolutePath)
             if (handle == 0L) throw IllegalStateException(
                 "llama.cpp could not load $modelPath (${"%.1f".format(file.length() / (1024f * 1024f))} MB). " +
                 "The model format may be unsupported. Try a different GGUF quantization."
             )
             modelHandle = handle
+            hasVision = nativeHasVision(handle)
             _isUsingGpu.value = params.gpuLayers > 0
             _isReady.value = true
         }
@@ -89,8 +104,10 @@ class LlamaCppInferenceEngine @Inject constructor() : GemmaInferenceEngine {
             try {
                 tokenSink = { token -> trySend(token) }
                 withContext(Dispatchers.IO) {
+                    val payload = buildImagePayload(images)
                     nativeGenerateStreaming(h, prompt,
-                        params.maxTokens, params.temperature, params.topP)
+                        params.maxTokens, params.temperature, params.topP,
+                        payload?.rgb, payload?.widths, payload?.heights)
                 }
             } finally {
                 tokenSink = null
@@ -106,12 +123,54 @@ class LlamaCppInferenceEngine @Inject constructor() : GemmaInferenceEngine {
         _isGenerating.value = true
         try {
             withContext(Dispatchers.IO) {
+                val payload = buildImagePayload(images)
                 nativeGenerate(h, prompt,
-                    params.maxTokens, params.temperature, params.topP)
+                    params.maxTokens, params.temperature, params.topP,
+                    payload?.rgb, payload?.widths, payload?.heights)
             }
         } finally {
             _isGenerating.value = false
         }
+    }
+
+    private class ImagePayload(val rgb: Array<ByteArray>, val widths: IntArray, val heights: IntArray)
+
+    // Converts bitmaps to the raw RGB buffers mtmd_bitmap_init expects.
+    // Returns null when there is nothing to send (no images, or text-only model).
+    private fun buildImagePayload(images: List<Bitmap>): ImagePayload? {
+        if (images.isEmpty() || !hasVision) return null
+        val scaled = images.map { bmp ->
+            val maxDim = maxOf(bmp.width, bmp.height)
+            if (maxDim <= MAX_IMAGE_DIM) bmp
+            else {
+                val scale = MAX_IMAGE_DIM.toFloat() / maxDim
+                Bitmap.createScaledBitmap(
+                    bmp,
+                    (bmp.width * scale).toInt().coerceAtLeast(1),
+                    (bmp.height * scale).toInt().coerceAtLeast(1),
+                    true
+                )
+            }
+        }
+        return ImagePayload(
+            rgb = scaled.map { it.toRgbBytes() }.toTypedArray(),
+            widths = IntArray(scaled.size) { scaled[it].width },
+            heights = IntArray(scaled.size) { scaled[it].height }
+        )
+    }
+
+    private fun Bitmap.toRgbBytes(): ByteArray {
+        val bmp = if (config == Bitmap.Config.ARGB_8888) this else copy(Bitmap.Config.ARGB_8888, false)
+        val pixels = IntArray(bmp.width * bmp.height)
+        bmp.getPixels(pixels, 0, bmp.width, 0, 0, bmp.width, bmp.height)
+        val out = ByteArray(pixels.size * 3)
+        var j = 0
+        for (p in pixels) {
+            out[j++] = ((p shr 16) and 0xFF).toByte()
+            out[j++] = ((p shr 8) and 0xFF).toByte()
+            out[j++] = (p and 0xFF).toByte()
+        }
+        return out
     }
 
     override fun cancelGeneration() { _isGenerating.value = false }
@@ -120,6 +179,7 @@ class LlamaCppInferenceEngine @Inject constructor() : GemmaInferenceEngine {
         val h = modelHandle
         if (h != 0L) { try { nativeFree(h) } catch (_: Exception) {} }
         modelHandle = 0L
+        hasVision = false
         _isReady.value = false
         _isGenerating.value = false
     }
@@ -135,12 +195,17 @@ class LlamaCppInferenceEngine @Inject constructor() : GemmaInferenceEngine {
 
     // ── JNI declarations ────────────────────────────────────────────────────
     private external fun nativeInit()
-    private external fun nativeLoadModel(path: String, nCtx: Int, nThreads: Int, nGpuLayers: Int): Long
+    private external fun nativeLoadModel(
+        path: String, nCtx: Int, nThreads: Int, nGpuLayers: Int, mmprojPath: String?
+    ): Long
+    private external fun nativeHasVision(handle: Long): Boolean
     private external fun nativeGenerate(
-        handle: Long, prompt: String, maxTokens: Int, temperature: Float, topP: Float
+        handle: Long, prompt: String, maxTokens: Int, temperature: Float, topP: Float,
+        images: Array<ByteArray>?, widths: IntArray?, heights: IntArray?
     ): String
     private external fun nativeGenerateStreaming(
-        handle: Long, prompt: String, maxTokens: Int, temperature: Float, topP: Float
+        handle: Long, prompt: String, maxTokens: Int, temperature: Float, topP: Float,
+        images: Array<ByteArray>?, widths: IntArray?, heights: IntArray?
     )
     private external fun nativeCountTokens(handle: Long, text: String): Int
     private external fun nativeFree(handle: Long)
