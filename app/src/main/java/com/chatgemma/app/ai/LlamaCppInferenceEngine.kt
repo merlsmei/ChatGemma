@@ -59,7 +59,7 @@ class LlamaCppInferenceEngine @Inject constructor() : GemmaInferenceEngine {
             )
 
             nativeInit()
-            val nCtx     = params.maxTokens.coerceIn(512, 8192)
+            val nCtx     = params.contextSize.coerceIn(512, 8192)
             val nThreads = Runtime.getRuntime().availableProcessors().coerceAtMost(8)
             val handle = nativeLoadModel(modelPath, nCtx, nThreads, params.gpuLayers)
             if (handle == 0L) throw IllegalStateException(

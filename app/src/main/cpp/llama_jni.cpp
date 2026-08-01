@@ -2,6 +2,8 @@
 #include <string>
 #include <vector>
 #include <cstring>
+#include <cstdio>
+#include <algorithm>
 #include <android/log.h>
 #include "llama.h"
 #include "ggml-backend.h"
@@ -17,6 +19,27 @@ struct LlamaHandle {
     int nCtx;
     int nThreads;
 };
+
+// llama_decode GGML_ABORTs the whole process when a single batch exceeds
+// n_batch, so prompts must be fed in chunks no larger than PROMPT_BATCH
+// (which is what cp.n_batch is set to at context creation).
+static const int PROMPT_BATCH = 512;
+
+// Minimum number of context slots that must remain free for generation
+// after the prompt is evaluated.
+static const int MIN_GENERATION_HEADROOM = 16;
+
+static bool decode_prompt_chunked(llama_context* ctx, std::vector<llama_token>& tokens) {
+    for (size_t i = 0; i < tokens.size(); i += (size_t)PROMPT_BATCH) {
+        int n = (int)std::min((size_t)PROMPT_BATCH, tokens.size() - i);
+        llama_batch batch = llama_batch_get_one(tokens.data() + i, n);
+        if (llama_decode(ctx, batch) != 0) {
+            LOGE("Prompt decode failed at chunk offset %zu", i);
+            return false;
+        }
+    }
+    return true;
+}
 
 extern "C" {
 
@@ -65,17 +88,6 @@ Java_com_chatgemma_app_ai_LlamaCppInferenceEngine_nativeGenerate(
     auto* h = reinterpret_cast<LlamaHandle*>(handle);
     if (!h) return env->NewStringUTF("");
 
-    // Create a fresh context so we never need to clear the KV cache.
-    // This sidesteps the llama_kv_cache_clear → llama_kv_self_clear rename.
-    llama_context_params cp = llama_context_default_params();
-    cp.n_ctx     = static_cast<uint32_t>(h->nCtx);
-    cp.n_threads = static_cast<uint32_t>(h->nThreads);
-    llama_context* ctx = llama_init_from_model(h->model, cp);
-    if (!ctx) {
-        LOGE("Failed to create context");
-        return env->NewStringUTF("[Error: context creation failed]");
-    }
-
     const struct llama_vocab* vocab = llama_model_get_vocab(h->model);
     const char* prompt = env->GetStringUTFChars(jPrompt, nullptr);
 
@@ -89,12 +101,31 @@ Java_com_chatgemma_app_ai_LlamaCppInferenceEngine_nativeGenerate(
     llama_tokenize(vocab, prompt, (int32_t)strlen(prompt),
                    tokens.data(), nPrompt, false, true);
     env->ReleaseStringUTFChars(jPrompt, prompt);
-    LOGI("Prompt tokenized: %d tokens", nPrompt);
+    LOGI("Prompt tokenized: %d tokens (n_ctx=%d)", nPrompt, h->nCtx);
 
-    // Evaluate prompt tokens
-    llama_batch batch = llama_batch_get_one(tokens.data(), (int32_t)tokens.size());
-    if (llama_decode(ctx, batch) != 0) {
-        LOGE("Prompt decode failed");
+    if (nPrompt > h->nCtx - MIN_GENERATION_HEADROOM) {
+        LOGE("Prompt too long: %d tokens, context window is %d", nPrompt, h->nCtx);
+        char msg[192];
+        snprintf(msg, sizeof(msg),
+                 "[Error: conversation too long (%d tokens) for the %d-token context window. "
+                 "Compress the context or start a new chat.]", nPrompt, h->nCtx);
+        return env->NewStringUTF(msg);
+    }
+
+    // Create a fresh context so we never need to clear the KV cache.
+    // This sidesteps the llama_kv_cache_clear → llama_kv_self_clear rename.
+    llama_context_params cp = llama_context_default_params();
+    cp.n_ctx     = static_cast<uint32_t>(h->nCtx);
+    cp.n_batch   = static_cast<uint32_t>(PROMPT_BATCH);
+    cp.n_threads = static_cast<uint32_t>(h->nThreads);
+    llama_context* ctx = llama_init_from_model(h->model, cp);
+    if (!ctx) {
+        LOGE("Failed to create context");
+        return env->NewStringUTF("[Error: context creation failed]");
+    }
+
+    // Evaluate prompt tokens in n_batch-sized chunks
+    if (!decode_prompt_chunked(ctx, tokens)) {
         llama_free(ctx);
         return env->NewStringUTF("[Error: prompt decode failed]");
     }
@@ -110,11 +141,12 @@ Java_com_chatgemma_app_ai_LlamaCppInferenceEngine_nativeGenerate(
         llama_sampler_chain_add(sampler, llama_sampler_init_dist(42));
     }
 
-    // Generate tokens
+    // Generate tokens, never past the remaining context space
     std::string output;
     output.reserve(512);
     int nGenerated = 0;
-    for (int i = 0; i < maxNewTokens; ++i) {
+    int maxGen = std::min((int)maxNewTokens, h->nCtx - nPrompt - 1);
+    for (int i = 0; i < maxGen; ++i) {
         llama_token tok = llama_sampler_sample(sampler, ctx, -1);
         llama_sampler_accept(sampler, tok);
         if (llama_vocab_is_eog(vocab, tok)) break;
@@ -148,15 +180,6 @@ Java_com_chatgemma_app_ai_LlamaCppInferenceEngine_nativeGenerateStreaming(
     jmethodID onTokenId = env->GetMethodID(cls, "onToken", "(Ljava/lang/String;)V");
     if (!onTokenId) { LOGE("onToken method not found"); return; }
 
-    llama_context_params cp = llama_context_default_params();
-    cp.n_ctx     = static_cast<uint32_t>(h->nCtx);
-    cp.n_threads = static_cast<uint32_t>(h->nThreads);
-    llama_context* ctx = llama_init_from_model(h->model, cp);
-    if (!ctx) {
-        LOGE("Failed to create context");
-        return;
-    }
-
     const struct llama_vocab* vocab = llama_model_get_vocab(h->model);
     const char* prompt = env->GetStringUTFChars(jPrompt, nullptr);
 
@@ -168,11 +191,30 @@ Java_com_chatgemma_app_ai_LlamaCppInferenceEngine_nativeGenerateStreaming(
     llama_tokenize(vocab, prompt, (int32_t)strlen(prompt),
                    tokens.data(), nPrompt, false, true);
     env->ReleaseStringUTFChars(jPrompt, prompt);
-    LOGI("Prompt tokenized: %d tokens", nPrompt);
+    LOGI("Prompt tokenized: %d tokens (n_ctx=%d)", nPrompt, h->nCtx);
 
-    llama_batch batch = llama_batch_get_one(tokens.data(), (int32_t)tokens.size());
-    if (llama_decode(ctx, batch) != 0) {
-        LOGE("Prompt decode failed");
+    if (nPrompt > h->nCtx - MIN_GENERATION_HEADROOM) {
+        LOGE("Prompt too long: %d tokens, context window is %d", nPrompt, h->nCtx);
+        char msg[192];
+        snprintf(msg, sizeof(msg),
+                 "llama.cpp: conversation too long (%d tokens) for the %d-token context window. "
+                 "Compress the context or start a new chat.", nPrompt, h->nCtx);
+        jclass excCls = env->FindClass("java/lang/RuntimeException");
+        env->ThrowNew(excCls, msg);
+        return;
+    }
+
+    llama_context_params cp = llama_context_default_params();
+    cp.n_ctx     = static_cast<uint32_t>(h->nCtx);
+    cp.n_batch   = static_cast<uint32_t>(PROMPT_BATCH);
+    cp.n_threads = static_cast<uint32_t>(h->nThreads);
+    llama_context* ctx = llama_init_from_model(h->model, cp);
+    if (!ctx) {
+        LOGE("Failed to create context");
+        return;
+    }
+
+    if (!decode_prompt_chunked(ctx, tokens)) {
         llama_free(ctx);
         jclass excCls = env->FindClass("java/lang/RuntimeException");
         env->ThrowNew(excCls, "llama.cpp: prompt decode failed");
@@ -190,7 +232,8 @@ Java_com_chatgemma_app_ai_LlamaCppInferenceEngine_nativeGenerateStreaming(
     }
 
     int nGenerated = 0;
-    for (int i = 0; i < maxNewTokens; ++i) {
+    int maxGen = std::min((int)maxNewTokens, h->nCtx - nPrompt - 1);
+    for (int i = 0; i < maxGen; ++i) {
         llama_token tok = llama_sampler_sample(sampler, ctx, -1);
         llama_sampler_accept(sampler, tok);
         if (llama_vocab_is_eog(vocab, tok)) break;

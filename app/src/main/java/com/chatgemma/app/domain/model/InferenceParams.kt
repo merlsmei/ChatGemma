@@ -8,5 +8,6 @@ data class InferenceParams(
     val topK: Int = 40,
     val topP: Float = 0.95f,
     val randomSeed: Int = 0,
-    val gpuLayers: Int = 99  // 99 = full GPU offload; 0 = CPU only
+    val gpuLayers: Int = 99,  // 99 = full GPU offload; 0 = CPU only
+    val contextSize: Int = 4096  // total context window (prompt + output tokens)
 )

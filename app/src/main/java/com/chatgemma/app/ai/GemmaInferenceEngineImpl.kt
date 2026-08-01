@@ -67,7 +67,9 @@ class GemmaInferenceEngineImpl @Inject constructor(
         Log.i(TAG, "Creating MediaPipe LLM engine (backend=${if (useGpu) "GPU" else "CPU"})")
         val options = LlmInference.LlmInferenceOptions.builder()
             .setModelPath(modelPath)
-            .setMaxTokens(params.maxTokens)
+            // MediaPipe's maxTokens is the total context (input + output), not
+            // the max new tokens — size it from contextSize
+            .setMaxTokens(params.contextSize)
             .setPreferredBackend(if (useGpu) LlmInference.Backend.GPU else LlmInference.Backend.CPU)
             .build()
         return LlmInference.createFromOptions(context, options)

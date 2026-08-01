@@ -142,6 +142,7 @@ fun ChatScreen(
             // Context usage bar
             ContextUsageBar(
                 usagePercent = state.contextUsagePercent,
+                isCompressing = state.isCompressingContext,
                 onManageContext = onOpenTopicManager
             )
 
@@ -268,7 +269,11 @@ fun ChatScreen(
     if (state.showParamsSheet) {
         InferenceParamsSheet(
             params = state.inferenceParams,
+            autoCompressEnabled = state.autoCompressEnabled,
+            compressionThreshold = state.compressionThreshold,
             onParamsChange = viewModel::updateInferenceParams,
+            onAutoCompressChange = viewModel::setAutoCompressEnabled,
+            onCompressionThresholdChange = viewModel::setCompressionThreshold,
             onDismiss = { viewModel.setShowParamsSheet(false) }
         )
     }
