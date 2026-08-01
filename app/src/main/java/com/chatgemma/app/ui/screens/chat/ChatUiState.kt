@@ -29,6 +29,8 @@ data class ChatUiState(
     val sortMode: SortMode = SortMode.BY_TIME,
     val showBranchSelector: Boolean = false,
     val showParamsSheet: Boolean = false,
+    val systemPrompt: String? = null,
+    val showSystemPromptDialog: Boolean = false,
     val isModelLoaded: Boolean = false,
     val modelLoadingError: String? = null,
     val isAutoSpeaking: Boolean = false,

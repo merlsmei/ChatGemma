@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.Flow
 
 interface ChatRepository {
     fun getAllSessions(): Flow<List<Session>>
+    suspend fun getSession(sessionId: String): Session?
     fun getMessages(sessionId: String, branchId: String): Flow<List<Message>>
     suspend fun getMessagesList(sessionId: String, branchId: String): List<Message>
     suspend fun getMessagesByTopic(topicId: String, branchId: String): List<Message>
@@ -18,6 +19,7 @@ interface ChatRepository {
     suspend fun createSession(session: Session, mainBranch: Branch)
     suspend fun deleteSession(sessionId: String)
     suspend fun updateSessionTitle(sessionId: String, title: String)
+    suspend fun updateSessionSystemPrompt(sessionId: String, systemPrompt: String?)
     suspend fun createBranch(branch: Branch, messagesToCopy: List<Message>)
     suspend fun insertMessage(message: Message)
     suspend fun insertMessages(messages: List<Message>)

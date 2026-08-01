@@ -6,6 +6,7 @@ on:
       - "claude/android-gemma-chat-app-j6GOG"
       - "claude/model-download-progress-bar-Jlhq4"
       - "claude/chatgemma-litert-integration-mKHbS"
+      - "claude/chat-history-system-prompt-vfe8kh"
       - main
   workflow_dispatch:
 
