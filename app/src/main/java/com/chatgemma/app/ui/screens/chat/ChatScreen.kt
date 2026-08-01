@@ -76,6 +76,16 @@ fun ChatScreen(
                     IconButton(onClick = onOpenTopicManager) {
                         Icon(Icons.Default.Label, "Topics")
                     }
+                    // System prompt
+                    IconButton(onClick = { viewModel.setShowSystemPromptDialog(true) }) {
+                        Icon(
+                            Icons.Default.Psychology, "System Prompt",
+                            tint = if (state.systemPrompt.isNullOrBlank())
+                                LocalContentColor.current
+                            else
+                                MaterialTheme.colorScheme.primary
+                        )
+                    }
                     // Sort toggle
                     IconButton(onClick = {
                         viewModel.setSortMode(
@@ -242,6 +252,15 @@ fun ChatScreen(
             onBranchSelect = { branch -> onBranchSwitch(branch.id) },
             onRollbackMessage = { msg -> viewModel.rollbackToMessage(msg.id) },
             onDismiss = { viewModel.setShowBranchSelector(false) }
+        )
+    }
+
+    // System prompt editor
+    if (state.showSystemPromptDialog) {
+        SystemPromptDialog(
+            systemPrompt = state.systemPrompt,
+            onSave = viewModel::updateSystemPrompt,
+            onDismiss = { viewModel.setShowSystemPromptDialog(false) }
         )
     }
 

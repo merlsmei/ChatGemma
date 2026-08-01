@@ -25,6 +25,9 @@ class ChatRepositoryImpl @Inject constructor(
     override fun getAllSessions(): Flow<List<Session>> =
         sessionDao.getAllSessions().map { list -> list.map { it.toDomain() } }
 
+    override suspend fun getSession(sessionId: String): Session? =
+        sessionDao.getSessionById(sessionId)?.toDomain()
+
     override fun getMessages(sessionId: String, branchId: String): Flow<List<Message>> =
         messageDao.getMessages(sessionId, branchId).map { list -> list.map { it.toDomain() } }
 
@@ -65,6 +68,10 @@ class ChatRepositoryImpl @Inject constructor(
         sessionDao.updateSessionTitle(sessionId, title, System.currentTimeMillis())
     }
 
+    override suspend fun updateSessionSystemPrompt(sessionId: String, systemPrompt: String?) {
+        sessionDao.updateSessionSystemPrompt(sessionId, systemPrompt, System.currentTimeMillis())
+    }
+
     override suspend fun createBranch(branch: Branch, messagesToCopy: List<Message>) {
         branchDao.insertBranch(branch.toEntity())
         val copiedMessages = messagesToCopy.map { msg ->
@@ -103,8 +110,8 @@ class ChatRepositoryImpl @Inject constructor(
 
     // --- Mappers ---
 
-    private fun SessionEntity.toDomain() = Session(id, title, createdAt, updatedAt)
-    private fun Session.toEntity() = SessionEntity(id, title, createdAt, updatedAt)
+    private fun SessionEntity.toDomain() = Session(id, title, createdAt, updatedAt, systemPrompt)
+    private fun Session.toEntity() = SessionEntity(id, title, createdAt, updatedAt, systemPrompt)
 
     private fun BranchEntity.toDomain() = Branch(id, sessionId, parentMessageId, label, createdAt)
     private fun Branch.toEntity() = BranchEntity(id, sessionId, parentMessageId, label, createdAt)

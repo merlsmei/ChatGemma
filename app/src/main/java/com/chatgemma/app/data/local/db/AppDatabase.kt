@@ -3,6 +3,8 @@ package com.chatgemma.app.data.local.db
 import androidx.room.Database
 import androidx.room.RoomDatabase
 import androidx.room.TypeConverters
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import com.chatgemma.app.data.local.db.dao.*
 import com.chatgemma.app.data.local.entity.*
 
@@ -15,7 +17,7 @@ import com.chatgemma.app.data.local.entity.*
         ArchivedTopicEntity::class,
         ModelVersionEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
@@ -29,5 +31,11 @@ abstract class AppDatabase : RoomDatabase() {
 
     companion object {
         const val DATABASE_NAME = "chatgemma_db"
+
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE sessions ADD COLUMN systemPrompt TEXT")
+            }
+        }
     }
 }

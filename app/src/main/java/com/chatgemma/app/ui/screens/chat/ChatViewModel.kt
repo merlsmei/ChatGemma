@@ -13,6 +13,7 @@ import com.chatgemma.app.ai.GemmaInferenceEngine
 import com.chatgemma.app.ai.PromptBuilder
 import com.chatgemma.app.ai.VideoFrameExtractor
 import com.chatgemma.app.data.preferences.AppPreferences
+import com.chatgemma.app.data.repository.ChatRepository
 import com.chatgemma.app.data.repository.ModelRepository
 import com.chatgemma.app.domain.model.InferenceParams
 import com.chatgemma.app.domain.model.Message
@@ -50,6 +51,7 @@ class ChatViewModel @Inject constructor(
     private val summarizeTopicUseCase: SummarizeTopicUseCase,
     private val archiveTopicUseCase: ArchiveTopicUseCase,
     private val calculateContextUseCase: CalculateContextUsageUseCase,
+    private val chatRepository: ChatRepository,
     private val modelRepository: ModelRepository,
     private val gemmaEngine: GemmaInferenceEngine,
     private val videoFrameExtractor: VideoFrameExtractor,
@@ -67,13 +69,25 @@ class ChatViewModel @Inject constructor(
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
 
     private var generationJob: Job? = null
-    // Accumulated messages for building the next prompt
-    private val messageCache = mutableListOf<Message>()
 
     init {
+        loadSession()
         loadMessages()
         checkGpuCrashThenLoadModel()
         observeSpeech()
+    }
+
+    private fun loadSession() {
+        viewModelScope.launch {
+            chatRepository.getSession(sessionId)?.let { session ->
+                _uiState.update {
+                    it.copy(
+                        sessionTitle = session.title,
+                        systemPrompt = session.systemPrompt
+                    )
+                }
+            }
+        }
     }
 
     private fun checkGpuCrashThenLoadModel() {
@@ -94,8 +108,6 @@ class ChatViewModel @Inject constructor(
     private fun loadMessages() {
         getMessagesUseCase(sessionId, branchId)
             .onEach { messages ->
-                messageCache.clear()
-                messageCache.addAll(messages)
                 _uiState.update { it.copy(messages = messages) }
                 updateContextUsage()
             }
@@ -196,8 +208,16 @@ class ChatViewModel @Inject constructor(
             )
         }
 
+        // History snapshot taken before the user message was appended, so the
+        // prompt can't double-count it
+        val history = state.messages
+
         generationJob = viewModelScope.launch {
             try {
+                // Persist the user message immediately so it survives even if
+                // generation fails or is cancelled
+                chatRepository.insertMessage(userMessage)
+
                 // Build image bitmaps
                 val bitmaps = mutableListOf<Bitmap>()
                 images.forEach { uri -> uriToBitmap(uri)?.let { bitmaps.add(it) } }
@@ -216,7 +236,8 @@ class ChatViewModel @Inject constructor(
                     userMessage
                 }
                 val prompt = PromptBuilder.buildChatPrompt(
-                    messageCache + promptUserMessage
+                    history = history + promptUserMessage,
+                    systemPrompt = state.systemPrompt?.takeIf { it.isNotBlank() }
                 )
 
                 // Set GPU crash sentinel before inference if GPU is active
@@ -253,13 +274,15 @@ class ChatViewModel @Inject constructor(
                     inferenceParamsJson = gson.toJson(state.inferenceParams)
                 )
 
-                // Persist both messages (insert via repository would go here in production)
-                // For now we trigger auto-tagging and update state
+                chatRepository.insertMessage(modelMessage)
+
                 _uiState.update {
                     it.copy(
                         isGenerating = false,
                         streamingText = "",
-                        messages = it.messages + modelMessage
+                        // The DB flow may have already emitted the inserted message
+                        messages = if (it.messages.any { m -> m.id == modelMessage.id })
+                            it.messages else it.messages + modelMessage
                     )
                 }
 
@@ -358,6 +381,18 @@ class ChatViewModel @Inject constructor(
 
     fun setShowParamsSheet(show: Boolean) {
         _uiState.update { it.copy(showParamsSheet = show) }
+    }
+
+    fun setShowSystemPromptDialog(show: Boolean) {
+        _uiState.update { it.copy(showSystemPromptDialog = show) }
+    }
+
+    fun updateSystemPrompt(prompt: String) {
+        val normalized = prompt.trim().ifEmpty { null }
+        _uiState.update { it.copy(systemPrompt = normalized, showSystemPromptDialog = false) }
+        viewModelScope.launch {
+            chatRepository.updateSessionSystemPrompt(sessionId, normalized)
+        }
     }
 
     fun updateInferenceParams(params: InferenceParams) {

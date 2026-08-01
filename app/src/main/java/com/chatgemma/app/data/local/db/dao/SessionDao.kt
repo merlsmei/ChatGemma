@@ -26,4 +26,7 @@ interface SessionDao {
 
     @Query("UPDATE sessions SET updatedAt = :updatedAt WHERE id = :id")
     suspend fun touchSession(id: String, updatedAt: Long)
+
+    @Query("UPDATE sessions SET systemPrompt = :systemPrompt, updatedAt = :updatedAt WHERE id = :id")
+    suspend fun updateSessionSystemPrompt(id: String, systemPrompt: String?, updatedAt: Long)
 }
