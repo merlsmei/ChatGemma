@@ -196,7 +196,7 @@ class ModelRepositoryImpl @Inject constructor(
     /**
      * Whether a model's on-device runtime can use the GPU. Mirrors how the
      * Google AI Edge Gallery annotates models: a curated per-model
-     * "accelerators" field in its allowlist (model_allowlists/*.json), not a
+     * "accelerators" field in its allowlist JSON files (model_allowlists), not a
      * runtime probe.
      *  - GGUF: llama.cpp's OpenCL (Adreno) backend offloads any GGUF model;
      *    the engine falls back to CPU at load time when no OpenCL device exists.
