@@ -5,6 +5,8 @@ import android.graphics.Bitmap
 import android.util.Log
 import com.chatgemma.app.domain.model.InferenceParams
 import com.google.ai.edge.litertlm.Backend
+import com.google.ai.edge.litertlm.Contents
+import com.google.ai.edge.litertlm.Conversation
 import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
@@ -42,14 +44,46 @@ class LiteRtInferenceEngine @Inject constructor(
     private var usingGpuBackend = false
     private val inferenceMutex = Mutex()
 
+    // ── Persistent conversation state (Gallery-style KV-cache reuse) ───────
+    // The AI Edge Gallery keeps one Conversation alive across turns so the
+    // model retains full history and prefill only processes the new message.
+    // We mirror the turns already inside the conversation; when the incoming
+    // prompt's history matches, we send just the last user message. Any
+    // mismatch (branch switch, edited history, compression, new session,
+    // sampler/system change) rebuilds the conversation seeded with
+    // initialMessages.
+    private var conversation: Conversation? = null
+    private var sentTurns: List<Turn> = emptyList()
+    private var convSystem: String? = null
+    private var convSamplerKey: String? = null
+
+    private data class Turn(val role: String, val text: String)
+
+    // The ViewModel strips Gemma control tokens and trims replies before
+    // persisting them, so the history parsed from the next prompt differs
+    // from the raw streamed text. Compare turns in that same normalized form,
+    // or the KV-cache fast path would never match after the first reply.
+    private fun List<Turn>.normalized(): List<Turn> = map { turn ->
+        Turn(
+            turn.role,
+            turn.text
+                .replace("<end_of_turn>", "")
+                .replace("<start_of_turn>", "")
+                .replace("<eos>", "")
+                .replace("<bos>", "")
+                .trim()
+        )
+    }
+
     override suspend fun initialize(modelPath: String, params: InferenceParams) {
         this.modelPath = modelPath
         setGpuBackend(params.gpuLayers > 0)
+        resetConversation()
         // Engine.initialize() is a blocking JNI call that can take several seconds;
         // it must not run on the main thread (the caller uses viewModelScope/Main).
         engine = withContext(Dispatchers.IO) {
             try {
-                createEngine(modelPath, usingGpuBackend)
+                createEngine(modelPath, usingGpuBackend, params)
             } catch (e: Exception) {
                 if (usingGpuBackend) {
                     // Any GPU engine-creation failure (OpenCL missing, or a GPU-delegate
@@ -60,7 +94,7 @@ class LiteRtInferenceEngine @Inject constructor(
                         "falling back to CPU", e)
                     setGpuBackend(false)
                     try {
-                        createEngine(modelPath, useGpu = false)
+                        createEngine(modelPath, useGpu = false, params)
                     } catch (e2: Exception) {
                         throw mapEngineError(e2)
                     }
@@ -77,13 +111,17 @@ class LiteRtInferenceEngine @Inject constructor(
         _isUsingGpu.value = useGpu
     }
 
-    private fun createEngine(modelPath: String, useGpu: Boolean): Engine {
+    private fun createEngine(modelPath: String, useGpu: Boolean, params: InferenceParams): Engine {
         val backend = if (useGpu) Backend.GPU() else Backend.CPU()
         val start = System.currentTimeMillis()
-        Log.i(TAG, "Creating LiteRT engine (backend=${if (useGpu) "GPU" else "CPU"})")
+        Log.i(TAG, "Creating LiteRT engine (backend=${if (useGpu) "GPU" else "CPU"}, " +
+            "maxNumTokens=${params.contextSize})")
         val config = EngineConfig(
             modelPath = modelPath,
             backend = backend,
+            // Total context window (prompt + output) — the Gallery sizes this
+            // from its per-model config; default EngineConfig values are small.
+            maxNumTokens = params.contextSize,
             cacheDir = context.cacheDir.path
         )
         return Engine(config).also { it.initialize() }.also {
@@ -123,24 +161,27 @@ class LiteRtInferenceEngine @Inject constructor(
                 topP = params.topP.toDouble(),
                 temperature = params.temperature.toDouble()
             )
-            val convConfig = ConversationConfig(samplerConfig = samplerConfig)
-            val userMessage = extractLastUserMessage(prompt)
+            val samplerKey = "${params.topK}/${params.topP}/${params.temperature}"
+            val (systemPrompt, turns) = parsePrompt(prompt)
+            val history = turns.dropLast(1)
+            val lastUser = turns.lastOrNull()?.takeIf { it.role == "user" }?.text
+                ?: extractLastUserMessage(prompt)
 
             // Runs one conversation turn, streaming non-empty chunks downstream.
-            // Returns the number of chunks emitted, or null if generation timed out
+            // Returns the accumulated response, or null if generation timed out
             // (guards against the known upstream GPU "0 chunks, no done" wedge).
-            suspend fun stream(): Int? {
+            suspend fun stream(): String? {
                 var chunks = 0
-                var chars = 0
+                val response = StringBuilder()
                 val backendLabel = if (usingGpuBackend) "GPU" else "CPU"
-                val conversation = engine!!.createConversation(convConfig)
+                val conv = obtainConversation(systemPrompt, history, samplerConfig, samplerKey)
                 val completed = withTimeoutOrNull(GENERATION_TIMEOUT_MS) {
-                    conversation.sendMessageAsync(Message.user(userMessage))
+                    conv.sendMessageAsync(Message.user(lastUser))
                         .collect { msg ->
                             val text = msg.toString()
                             if (text.isNotEmpty()) {
                                 chunks++
-                                chars += text.length
+                                response.append(text)
                                 send(text)
                             }
                         }
@@ -149,13 +190,18 @@ class LiteRtInferenceEngine @Inject constructor(
                 if (completed == null) {
                     Log.e(TAG, "LiteRT generation timed out after ${GENERATION_TIMEOUT_MS}ms " +
                         "(backend=$backendLabel, chunks=$chunks)")
-                    runCatching { conversation.close() }
+                    resetConversation()
                     return null
                 }
-                Log.i(TAG, "LiteRT generation done (backend=$backendLabel, chunks=$chunks, chars=$chars)")
-                return chunks
+                // Record the turns now inside the conversation so the next call
+                // can reuse the warm KV cache and skip re-prefilling history.
+                sentTurns = history + Turn("user", lastUser) + Turn("model", response.toString())
+                Log.i(TAG, "LiteRT generation done (backend=$backendLabel, chunks=$chunks, " +
+                    "chars=${response.length}, historyTurns=${history.size})")
+                return response.toString()
             }
 
+            var turnCompleted = false
             try {
                 try {
                     if (stream() == null) {
@@ -163,27 +209,88 @@ class LiteRtInferenceEngine @Inject constructor(
                             "LiteRT generation timed out — the GPU backend may be unsupported on this device."
                         )
                     }
+                    turnCompleted = true
                 } catch (e: Exception) {
                     // GPU backend init can succeed but OpenCL still be unavailable
                     // when the first conversation/generation actually runs. Fall
                     // back to CPU and retry once.
                     if (usingGpuBackend && isOpenClUnavailable(e)) {
                         Log.w(TAG, "OpenCL unavailable during generation; rebuilding engine on CPU", e)
+                        resetConversation()
                         engine?.close()
                         setGpuBackend(false)
-                        engine = createEngine(modelPath!!, useGpu = false)
+                        engine = createEngine(modelPath!!, useGpu = false, params)
                         if (stream() == null) {
                             throw IllegalStateException("LiteRT CPU generation timed out.")
                         }
+                        turnCompleted = true
                     } else {
                         throw e
                     }
                 }
             } finally {
+                // A cancelled or failed turn leaves the conversation's KV cache
+                // holding a half-finished exchange we can't mirror — drop it so
+                // the next turn rebuilds from the prompt instead of desyncing.
+                if (!turnCompleted) resetConversation()
                 _isGenerating.value = false
             }
         }
     }.flowOn(Dispatchers.IO)
+
+    /**
+     * Reuses the live conversation when its contents match the incoming
+     * history (the common append-only chat case — Gallery behavior), otherwise
+     * closes it and creates a new one seeded with the full history and system
+     * instruction so the model never loses context.
+     */
+    private fun obtainConversation(
+        systemPrompt: String?,
+        history: List<Turn>,
+        samplerConfig: SamplerConfig,
+        samplerKey: String
+    ): Conversation {
+        val existing = conversation
+        if (existing != null &&
+            convSystem == systemPrompt &&
+            convSamplerKey == samplerKey &&
+            sentTurns.normalized() == history.normalized()
+        ) {
+            return existing
+        }
+        runCatching { existing?.close() }
+        Log.i(TAG, "Building LiteRT conversation (historyTurns=${history.size}, " +
+            "system=${systemPrompt != null})")
+        val initialMessages = history.map { turn ->
+            if (turn.role == "user") Message.user(turn.text) else Message.model(turn.text)
+        }
+        val config = if (systemPrompt != null) {
+            ConversationConfig(
+                systemInstruction = Contents.of(systemPrompt),
+                initialMessages = initialMessages,
+                samplerConfig = samplerConfig
+            )
+        } else {
+            ConversationConfig(
+                initialMessages = initialMessages,
+                samplerConfig = samplerConfig
+            )
+        }
+        return engine!!.createConversation(config).also {
+            conversation = it
+            sentTurns = history
+            convSystem = systemPrompt
+            convSamplerKey = samplerKey
+        }
+    }
+
+    private fun resetConversation() {
+        runCatching { conversation?.close() }
+        conversation = null
+        sentTurns = emptyList()
+        convSystem = null
+        convSamplerKey = null
+    }
 
     override suspend fun generateFull(
         prompt: String,
@@ -200,6 +307,7 @@ class LiteRtInferenceEngine @Inject constructor(
     }
 
     override fun release() {
+        resetConversation()
         engine?.close()
         engine = null
         _isReady.value = false
@@ -208,19 +316,62 @@ class LiteRtInferenceEngine @Inject constructor(
 
     override suspend fun countTokens(text: String): Int = estimateTokens(text)
 
+    // ── Prompt parsing ──────────────────────────────────────────────────────
+
+    /**
+     * Parses a PromptBuilder-formatted Gemma prompt back into a system
+     * instruction plus ordered turns. PromptBuilder encodes the system prompt
+     * as a leading "user: [System: …]" / "model: Understood." pair — that pair
+     * is converted to a real systemInstruction here.
+     */
+    private fun parsePrompt(prompt: String): Pair<String?, List<Turn>> {
+        val turns = mutableListOf<Turn>()
+        var idx = prompt.indexOf(TURN_START)
+        while (idx != -1) {
+            val roleStart = idx + TURN_START.length
+            val roleEnd = prompt.indexOf('\n', roleStart)
+            if (roleEnd == -1) break
+            val role = prompt.substring(roleStart, roleEnd).trim()
+            val contentEnd = prompt.indexOf(TURN_END, roleEnd + 1)
+            if (contentEnd == -1) {
+                // Trailing open turn ("<start_of_turn>model\n") — generation cue, skip
+                break
+            }
+            val text = prompt.substring(roleEnd + 1, contentEnd)
+            turns.add(Turn(if (role == "user") "user" else "model", text))
+            idx = prompt.indexOf(TURN_START, contentEnd)
+        }
+
+        var systemPrompt: String? = null
+        if (turns.size >= 2 &&
+            turns[0].role == "user" && turns[0].text.startsWith(SYSTEM_PREFIX) &&
+            turns[1].role == "model"
+        ) {
+            systemPrompt = turns[0].text
+                .removePrefix(SYSTEM_PREFIX)
+                .removeSuffix("]")
+                .trim()
+            turns.removeAt(1)
+            turns.removeAt(0)
+        }
+        return systemPrompt to turns
+    }
+
     // Parses Gemma-formatted prompts and returns only the last user message text.
     private fun extractLastUserMessage(prompt: String): String {
-        val marker = "<start_of_turn>user\n"
-        val end = "<end_of_turn>"
+        val marker = "${TURN_START}user\n"
         val idx = prompt.lastIndexOf(marker)
         if (idx == -1) return prompt
         val start = idx + marker.length
-        val endIdx = prompt.indexOf(end, start)
+        val endIdx = prompt.indexOf(TURN_END, start)
         return if (endIdx == -1) prompt.substring(start) else prompt.substring(start, endIdx)
     }
 
     private companion object {
         const val TAG = "LiteRtEngine"
         const val GENERATION_TIMEOUT_MS = 120_000L
+        const val TURN_START = "<start_of_turn>"
+        const val TURN_END = "<end_of_turn>"
+        const val SYSTEM_PREFIX = "[System: "
     }
 }

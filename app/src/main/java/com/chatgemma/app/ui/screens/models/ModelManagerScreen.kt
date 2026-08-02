@@ -11,6 +11,8 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -200,13 +202,19 @@ fun ModelManagerScreen(
                         Spacer(Modifier.width(8.dp))
                         Column {
                             Text(
-                                "Download a Gemma model to start chatting. GGUF and .task formats are supported.",
+                                "Download a Gemma model to start chatting. GGUF, LiteRT (.litertlm) and MediaPipe (.task) formats are supported.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onPrimaryContainer
                             )
                             Spacer(Modifier.height(4.dp))
                             Text(
-                                "Mobile Ready = fits on a 12 GB device. Q4_K_M GGUF is downloaded when available.",
+                                "GPU = supports GPU acceleration on this device class; CPU Only bundles always run on CPU. Mobile Ready = fits on a 12 GB device.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                "Gemma 4 ships as LiteRT only — the same E2B/E4B bundles the Google AI Edge Gallery uses. MediaPipe has no Gemma 4 (its LLM API is in maintenance mode).",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
                             )
@@ -407,9 +415,12 @@ fun ModelCard(
                 }
             }
 
-            // Row 2: format / source / mobile badges
+            // Row 2: format / gpu / source / mobile badges
             Spacer(Modifier.height(6.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.horizontalScroll(rememberScrollState())
+            ) {
                 // Format badge (GGUF / MediaPipe)
                 SuggestionChip(
                     onClick = {},
@@ -467,6 +478,50 @@ fun ModelCard(
                             containerColor = MaterialTheme.colorScheme.secondaryContainer,
                             labelColor = MaterialTheme.colorScheme.onSecondaryContainer,
                             iconContentColor = MaterialTheme.colorScheme.secondary
+                        )
+                    )
+                }
+                // GPU acceleration badge — curated the same way the Google AI
+                // Edge Gallery annotates its allowlist ("gpu,cpu" vs "cpu").
+                when (model.gpuSupport) {
+                    "gpu" -> SuggestionChip(
+                        onClick = {},
+                        label = {
+                            Text(
+                                "GPU",
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        },
+                        icon = {
+                            Icon(
+                                Icons.Default.Speed, null,
+                                modifier = Modifier.size(14.dp)
+                            )
+                        },
+                        colors = SuggestionChipDefaults.suggestionChipColors(
+                            containerColor = Color(0xFF0D47A1).copy(alpha = 0.15f),
+                            labelColor = Color(0xFF1565C0),
+                            iconContentColor = Color(0xFF1565C0)
+                        )
+                    )
+                    "cpu" -> SuggestionChip(
+                        onClick = {},
+                        label = {
+                            Text(
+                                "CPU Only",
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        },
+                        icon = {
+                            Icon(
+                                Icons.Default.Memory, null,
+                                modifier = Modifier.size(14.dp)
+                            )
+                        },
+                        colors = SuggestionChipDefaults.suggestionChipColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                            labelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            iconContentColor = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     )
                 }
@@ -698,7 +753,7 @@ private fun LocalFilePickerDialog(
         text = {
             if (files.isEmpty()) {
                 Column {
-                    Text("No .gguf or .task files found in the models folder.")
+                    Text("No .gguf, .litertlm or .task files found in the models folder.")
                     Spacer(Modifier.height(8.dp))
                     Text(
                         "Place model files in:\n$modelsDir",

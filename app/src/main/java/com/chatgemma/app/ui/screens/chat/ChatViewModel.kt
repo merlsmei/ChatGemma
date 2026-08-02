@@ -148,9 +148,19 @@ class ChatViewModel @Inject constructor(
                 return@launch
             }
             try {
-                val params = _uiState.value.inferenceParams.copy(
+                val stored = _uiState.value.inferenceParams
+                // Google AI Edge Gallery ships Gemma (LiteRT) with topK=64,
+                // topP=0.95, temperature=1.0, maxTokens=4000 — apply the same
+                // defaults so output quality matches, but only while the user
+                // hasn't customized the sampler away from the app defaults.
+                val isUntouchedSampler = stored.temperature == 0.8f &&
+                    stored.topK == 40 && stored.topP == 0.95f
+                val tuned = if (model.modelFormat == "LiteRT" && isUntouchedSampler) {
+                    stored.copy(temperature = 1.0f, topK = 64, topP = 0.95f)
+                } else stored
+                val params = tuned.copy(
                     modelId = model.id,
-                    maxTokens = 1024,
+                    maxTokens = if (model.modelFormat == "LiteRT") 4000 else 1024,
                     modelFormat = model.modelFormat,
                     // Read directly from prefs so the engine always gets the
                     // persisted value even if the async pref load hasn't landed

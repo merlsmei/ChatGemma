@@ -136,7 +136,23 @@ class ModelRepositoryImpl @Inject constructor(
                     modelVersionDao.insertModel(model.toEntity())
                     newModels.add(model)
                 } else {
-                    modelVersionDao.updateModel(existing.copy(lastChecked = now))
+                    modelVersionDao.updateModel(
+                        existing.copy(
+                            lastChecked = now,
+                            // Backfill/refresh GPU annotation for rows created before v5
+                            gpuSupport = detectGpuSupport(existing.id, existing.modelFormat)
+                        )
+                    )
+                }
+            }
+
+            // Curated Gemma 4 on-device models (same repos and bundles the Google
+            // AI Edge Gallery ships) — guaranteed to appear even when HF search
+            // ranking buries them or a search call fails.
+            curatedGemma4Models.forEach { curated ->
+                if (modelVersionDao.getModelById(curated.id) == null) {
+                    modelVersionDao.insertModel(curated.copy(lastChecked = now).toEntity())
+                    newModels.add(curated.copy(lastChecked = now))
                 }
             }
             newModels
@@ -172,9 +188,89 @@ class ModelRepositoryImpl @Inject constructor(
             source = source,
             gemmaGeneration = gen,
             paramCount = params,
-            modelFormat = format
+            modelFormat = format,
+            gpuSupport = detectGpuSupport(id, format)
         )
     }
+
+    /**
+     * Whether a model's on-device runtime can use the GPU. Mirrors how the
+     * Google AI Edge Gallery annotates models: a curated per-model
+     * "accelerators" field in its allowlist (model_allowlists/*.json), not a
+     * runtime probe.
+     *  - GGUF: llama.cpp's OpenCL (Adreno) backend offloads any GGUF model;
+     *    the engine falls back to CPU at load time when no OpenCL device exists.
+     *  - LiteRT (.litertlm): backend support is baked into each bundle at
+     *    conversion time. Gemma 3/3n/4 and the Qwen/DeepSeek community
+     *    conversions are listed "gpu,cpu" in the Gallery allowlist; the
+     *    FunctionGemma 270M q8 bundles are CPU-only.
+     *  - MediaPipe (.task): older Gemma releases shipped separate gpu-/cpu-
+     *    suffixed files; Gemma 3 1B .task supports preferredBackend=GPU.
+     */
+    private fun detectGpuSupport(modelId: String, format: String): String {
+        val lower = modelId.lowercase()
+        return when (format) {
+            "GGUF" -> "gpu"
+            "LiteRT" -> when {
+                lower.contains("functiongemma") || lower.contains("270m") -> "cpu"
+                lower.contains("gemma-4") || lower.contains("gemma4")     -> "gpu"
+                lower.contains("gemma-3n") || lower.contains("gemma3n")   -> "gpu"
+                lower.contains("gemma-3") || lower.contains("gemma3")     -> "gpu"
+                lower.contains("qwen") || lower.contains("deepseek")      -> "gpu"
+                else -> "unknown"
+            }
+            "MediaPipe" -> when {
+                lower.contains("cpu") && !lower.contains("gpu")           -> "cpu"
+                lower.contains("gpu")                                     -> "gpu"
+                lower.contains("gemma-3") || lower.contains("gemma3")     -> "gpu"
+                else -> "unknown"
+            }
+            else -> "unknown"
+        }
+    }
+
+    /**
+     * The exact Gemma 4 on-device models the Google AI Edge Gallery ships
+     * (allowlist 1_0_15): litert-community repos, generic .litertlm bundle,
+     * GPU+CPU backends, 32k on-device context. MediaPipe has no Gemma 4 —
+     * the LLM Inference API is in maintenance mode and Gemma 4 is released
+     * for LiteRT-LM only.
+     */
+    private val curatedGemma4Models: List<ModelVersion>
+        get() = listOf(
+            ModelVersion(
+                id = "litert-community/gemma-4-E2B-it-litert-lm",
+                displayName = "Gemma 4 E2B IT (LiteRT)",
+                sizeBytes = 2_588_147_712,          // gemma-4-E2B-it.litertlm
+                downloadedAt = null, localPath = null, isActive = false,
+                lastChecked = 0L, releaseDate = "",
+                quantization = "int4",
+                contextLength = 32_000,             // Gallery maxContextLength
+                downloadUrl = "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm",
+                isMobileSuitable = true,
+                source = "google",
+                gemmaGeneration = 4,
+                paramCount = "E2B",
+                modelFormat = "LiteRT",
+                gpuSupport = "gpu"
+            ),
+            ModelVersion(
+                id = "litert-community/gemma-4-E4B-it-litert-lm",
+                displayName = "Gemma 4 E4B IT (LiteRT)",
+                sizeBytes = 3_661_373_440,          // gemma-4-E4B-it.litertlm (~3.4 GB)
+                downloadedAt = null, localPath = null, isActive = false,
+                lastChecked = 0L, releaseDate = "",
+                quantization = "int4",
+                contextLength = 32_000,
+                downloadUrl = "https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm",
+                isMobileSuitable = true,
+                source = "google",
+                gemmaGeneration = 4,
+                paramCount = "E4B",
+                modelFormat = "LiteRT",
+                gpuSupport = "gpu"
+            )
+        )
 
     /** Clears localPath for any "downloaded" model whose file is missing or too small to be real. */
     private suspend fun cleanupInvalidDownloads() {
@@ -453,12 +549,12 @@ class ModelRepositoryImpl @Inject constructor(
     private fun ModelVersionEntity.toDomain() = ModelVersion(
         id, displayName, sizeBytes, downloadedAt, localPath,
         isActive, lastChecked, releaseDate, quantization, contextLength, downloadUrl,
-        isMobileSuitable, source, gemmaGeneration, paramCount, modelFormat
+        isMobileSuitable, source, gemmaGeneration, paramCount, modelFormat, gpuSupport
     )
 
     private fun ModelVersion.toEntity() = ModelVersionEntity(
         id, displayName, sizeBytes, downloadedAt, localPath,
         isActive, lastChecked, releaseDate, quantization, contextLength, downloadUrl,
-        isMobileSuitable, source, gemmaGeneration, paramCount, modelFormat
+        isMobileSuitable, source, gemmaGeneration, paramCount, modelFormat, gpuSupport
     )
 }

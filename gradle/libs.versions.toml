@@ -15,7 +15,11 @@ hiltNavigationCompose = "1.2.0"
 hiltWork = "1.2.0"
 room = "2.7.1"
 mediapipeGenai = "0.10.27"
-litertlm = "0.13.1"
+# 0.14.0: latest LiteRT-LM runtime — includes Gemma 4 Multi-Token Prediction
+# (since 0.11, >2x GPU decode speedup) and automatic vision/audio backend
+# selection. New Gemma drops on HF have historically required the newest
+# runtime, so keep this current.
+litertlm = "0.14.0"
 retrofit = "2.11.0"
 okhttp = "4.12.0"
 work = "2.9.1"
