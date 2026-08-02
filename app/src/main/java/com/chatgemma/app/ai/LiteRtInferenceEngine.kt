@@ -2,6 +2,7 @@ package com.chatgemma.app.ai
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.os.SystemClock
 import android.util.Log
 import com.chatgemma.app.domain.model.InferenceParams
 import com.google.ai.edge.litertlm.Backend
@@ -13,17 +14,25 @@ import com.google.ai.edge.litertlm.EngineConfig
 import com.google.ai.edge.litertlm.Message
 import com.google.ai.edge.litertlm.SamplerConfig
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -168,46 +177,99 @@ class LiteRtInferenceEngine @Inject constructor(
                 ?: extractLastUserMessage(prompt)
 
             // Runs one conversation turn, streaming non-empty chunks downstream.
-            // Returns the accumulated response, or null if generation timed out
-            // (guards against the known upstream GPU "0 chunks, no done" wedge).
-            suspend fun stream(): String? {
-                var chunks = 0
+            // Returns the accumulated response, or null if generation stalled —
+            // no chunk within the watchdog window (guards against the known
+            // upstream GPU "0 chunks, no done" wedge). Total generation time is
+            // deliberately unbounded: CPU decode of a long reply takes many
+            // minutes while still making steady progress, and a whole-turn
+            // timeout was killing those healthy generations at the cap.
+            suspend fun stream(): String? = coroutineScope {
                 val response = StringBuilder()
                 val backendLabel = if (usingGpuBackend) "GPU" else "CPU"
                 val conv = obtainConversation(systemPrompt, history, samplerConfig, samplerKey)
-                val completed = withTimeoutOrNull(GENERATION_TIMEOUT_MS) {
+                val chunks = AtomicInteger(0)
+                val lastChunkAt = AtomicLong(SystemClock.elapsedRealtime())
+                val stalled = AtomicBoolean(false)
+                val collector = async {
                     conv.sendMessageAsync(Message.user(lastUser))
                         .collect { msg ->
                             val text = msg.toString()
                             if (text.isNotEmpty()) {
-                                chunks++
+                                chunks.incrementAndGet()
                                 response.append(text)
+                                lastChunkAt.set(SystemClock.elapsedRealtime())
                                 send(text)
                             }
                         }
-                    true
                 }
-                if (completed == null) {
-                    Log.e(TAG, "LiteRT generation timed out after ${GENERATION_TIMEOUT_MS}ms " +
-                        "(backend=$backendLabel, chunks=$chunks)")
+                val watchdog = launch {
+                    while (isActive) {
+                        delay(WATCHDOG_POLL_MS)
+                        // Prefill emits no chunks, so before the first token allow
+                        // for CPU prefill of a long history; between tokens the
+                        // steady-state gap is orders of magnitude below the limit.
+                        val allowance = if (chunks.get() == 0 && !usingGpuBackend) {
+                            FIRST_CHUNK_TIMEOUT_MS
+                        } else {
+                            STALL_TIMEOUT_MS
+                        }
+                        if (SystemClock.elapsedRealtime() - lastChunkAt.get() > allowance) {
+                            stalled.set(true)
+                            collector.cancel()
+                            break
+                        }
+                    }
+                }
+                try {
+                    collector.await()
+                } catch (e: CancellationException) {
+                    // Only swallow the watchdog's own cancel; external
+                    // cancellation (stop button, leaving the screen) propagates.
+                    if (!stalled.get()) throw e
+                } finally {
+                    watchdog.cancel()
+                }
+                if (stalled.get()) {
+                    Log.e(TAG, "LiteRT generation stalled (backend=$backendLabel, " +
+                        "chunks=${chunks.get()})")
                     resetConversation()
-                    return null
+                    return@coroutineScope null
                 }
                 // Record the turns now inside the conversation so the next call
                 // can reuse the warm KV cache and skip re-prefilling history.
                 sentTurns = history + Turn("user", lastUser) + Turn("model", response.toString())
-                Log.i(TAG, "LiteRT generation done (backend=$backendLabel, chunks=$chunks, " +
+                Log.i(TAG, "LiteRT generation done (backend=$backendLabel, chunks=${chunks.get()}, " +
                     "chars=${response.length}, historyTurns=${history.size})")
-                return response.toString()
+                response.toString()
+            }
+
+            fun rebuildEngineOnCpu() {
+                resetConversation()
+                engine?.close()
+                setGpuBackend(false)
+                engine = createEngine(modelPath!!, useGpu = false, params)
             }
 
             var turnCompleted = false
             try {
                 try {
                     if (stream() == null) {
-                        throw IllegalStateException(
-                            "LiteRT generation timed out — the GPU backend may be unsupported on this device."
-                        )
+                        // A stalled GPU generation is the same wedge class as an
+                        // OpenCL failure — rebuild on CPU and retry once rather
+                        // than surfacing an error.
+                        if (usingGpuBackend) {
+                            Log.w(TAG, "GPU generation stalled; rebuilding engine on CPU")
+                            rebuildEngineOnCpu()
+                            if (stream() == null) {
+                                throw IllegalStateException(
+                                    "Generation stalled — the model stopped producing output on CPU as well."
+                                )
+                            }
+                        } else {
+                            throw IllegalStateException(
+                                "Generation stalled — the model stopped producing output."
+                            )
+                        }
                     }
                     turnCompleted = true
                 } catch (e: Exception) {
@@ -216,12 +278,9 @@ class LiteRtInferenceEngine @Inject constructor(
                     // back to CPU and retry once.
                     if (usingGpuBackend && isOpenClUnavailable(e)) {
                         Log.w(TAG, "OpenCL unavailable during generation; rebuilding engine on CPU", e)
-                        resetConversation()
-                        engine?.close()
-                        setGpuBackend(false)
-                        engine = createEngine(modelPath!!, useGpu = false, params)
+                        rebuildEngineOnCpu()
                         if (stream() == null) {
-                            throw IllegalStateException("LiteRT CPU generation timed out.")
+                            throw IllegalStateException("Generation stalled after falling back to CPU.")
                         }
                         turnCompleted = true
                     } else {
@@ -369,7 +428,11 @@ class LiteRtInferenceEngine @Inject constructor(
 
     private companion object {
         const val TAG = "LiteRtEngine"
-        const val GENERATION_TIMEOUT_MS = 120_000L
+        // Max gap between streamed chunks before the turn counts as stalled.
+        const val STALL_TIMEOUT_MS = 120_000L
+        // CPU prefill of a long history emits nothing until the first token.
+        const val FIRST_CHUNK_TIMEOUT_MS = 300_000L
+        const val WATCHDOG_POLL_MS = 5_000L
         const val TURN_START = "<start_of_turn>"
         const val TURN_END = "<end_of_turn>"
         const val SYSTEM_PREFIX = "[System: "
