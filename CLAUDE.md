@@ -1,5 +1,32 @@
 # ChatGemma — Claude Notes
 
+## LiteRT-LM (.litertlm) Models
+
+### Hugging Face bundle selection (crash-critical)
+
+`litert-community` repos (e.g. `litert-community/gemma-4-E2B-it-litert-lm`) ship
+**multiple** `.litertlm` files: the generic mobile bundle (`gemma-4-E2B-it.litertlm`)
+plus web- and NPU-specific builds (`…-web.litertlm`, `…_qualcomm_sm8750.litertlm`,
+`…_Google_Tensor_G5.litertlm`, `…_intel_PTL.litertlm`). Only the generic bundle
+contains the `TF_LITE_PREFILL_DECODE` CPU/GPU graph; the others fail on-device with
+`Failed to create engine: NOT_FOUND: TF_LITE_PREFILL_DECODE not found in the model.`
+The HF API lists siblings alphabetically and `-` sorts before `.`, so a naive
+"first `.litertlm`" pick downloads the web bundle. `ModelRepositoryImpl.pickRuntimeBundle`
+filters platform-specific tokens and prefers int4 > int8 > shortest name — keep it
+in sync if repos introduce new platform suffixes.
+
+### Engine routing
+
+`HybridInferenceEngine` sniffs magic bytes first ("GGUF", "LITERTLM", "PK" zip →
+MediaPipe `.task`), then falls back to extension, then `params.modelFormat`. Routing
+a `.litertlm` to MediaPipe produces the same `TF_LITE_PREFILL_DECODE` NOT_FOUND error,
+so keep magic-byte routing authoritative.
+
+`litertlm-android` is pinned in `gradle/libs.versions.toml` (`litertlm`). New Gemma
+model drops on HF have historically required the newest runtime (see HF discussions
+"New gemma-4-E2B-it.litertlm broken!") — when a fresh model fails to load, check for
+a newer LiteRT-LM release before debugging further.
+
 ## llama.cpp JNI Integration
 
 ### API Version (pinned: b8763)
