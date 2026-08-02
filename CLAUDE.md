@@ -15,6 +15,47 @@ The HF API lists siblings alphabetically and `-` sorts before `.`, so a naive
 filters platform-specific tokens and prefers int4 > int8 > shortest name — keep it
 in sync if repos introduce new platform suffixes.
 
+### GPU support annotation (Model Manager badges)
+
+GPU capability for LLM bundles is **not discoverable at runtime before download** —
+Google's AI Edge Gallery solves this with a curated per-model `"accelerators"`
+field in its allowlist (`google-ai-edge/gallery` → `model_allowlists/*.json`,
+e.g. `"gpu,cpu"` vs `"cpu"`). `ModelRepositoryImpl.detectGpuSupport` mirrors that
+knowledge (Gemma 3/3n/4 LiteRT = GPU; FunctionGemma-270M q8 bundles = CPU-only;
+GGUF = GPU via llama.cpp OpenCL with runtime fallback) into
+`ModelVersion.gpuSupport` ("gpu" | "cpu" | "unknown"), shown as a badge on the
+model card. Update the curated rules when the Gallery allowlist changes.
+
+### MediaPipe has no Gemma 4 (by design)
+
+The MediaPipe LLM Inference API (`tasks-genai`) is in **maintenance mode**;
+Google's migration target is LiteRT-LM. Gemma 4 is released for on-device use
+as `.litertlm` only (`litert-community/gemma-4-E2B-it-litert-lm` / `-E4B-`) —
+the exact bundles the AI Edge Gallery ships. Do not go looking for a Gemma 4
+`.task`; the `-web.task` sibling is web-only. `ModelRepositoryImpl` pins these
+two repos as curated entries so they always appear in Model Manager.
+
+### Gallery parity (speed & quality)
+
+The AI Edge Gallery's advantages over a naive LiteRT integration, all now
+mirrored in `LiteRtInferenceEngine` / `ChatViewModel`:
+- **Persistent `Conversation` across turns** — full history retained in the KV
+  cache, prefill only processes the new message. The engine mirrors sent turns
+  in `sentTurns`; a history mismatch (branch switch, compression, edits)
+  rebuilds the conversation via `ConversationConfig(initialMessages=…)`.
+  Never go back to one-shot conversations that send only the last user message.
+- **System prompt** goes through `ConversationConfig(systemInstruction=…)`, not
+  a fake user/model turn pair (PromptBuilder's `[System: …]` pair is parsed
+  back out in `parsePrompt`).
+- **Sampler defaults** for Gemma on LiteRT: topK=64, topP=0.95, temperature=1.0,
+  maxTokens=4000 (Gallery allowlist values). Applied in `ChatViewModel.loadModel`
+  only when the user hasn't customized the sampler.
+- **`EngineConfig(maxNumTokens=contextSize)`** — without it the context window
+  is the library default, not what the UI promises.
+- **Runtime version matters**: Gemma 4 Multi-Token Prediction (>2x GPU decode)
+  ships inside litertlm ≥0.11 and the standard `.litertlm` bundle — no app code
+  needed, just a current `litertlm` pin.
+
 ### Engine routing
 
 `HybridInferenceEngine` sniffs magic bytes first ("GGUF", "LITERTLM", "PK" zip →

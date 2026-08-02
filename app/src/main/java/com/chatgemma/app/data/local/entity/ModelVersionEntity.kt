@@ -22,5 +22,7 @@ data class ModelVersionEntity(
     val gemmaGeneration: Int = 0,
     val paramCount: String = "",
     // v3 fields
-    val modelFormat: String = "GGUF"   // "GGUF" | "MediaPipe"
+    val modelFormat: String = "GGUF",  // "GGUF" | "MediaPipe" | "LiteRT"
+    // v5 fields
+    val gpuSupport: String = "unknown" // "gpu" | "cpu" | "unknown"
 )
