@@ -59,9 +59,13 @@ class LiteRtInferenceEngine @Inject constructor(
                     Log.w(TAG, "GPU engine creation failed (${e.javaClass.simpleName}: ${e.message}); " +
                         "falling back to CPU", e)
                     setGpuBackend(false)
-                    createEngine(modelPath, useGpu = false)
+                    try {
+                        createEngine(modelPath, useGpu = false)
+                    } catch (e2: Exception) {
+                        throw mapEngineError(e2)
+                    }
                 } else {
-                    throw e
+                    throw mapEngineError(e)
                 }
             }
         }
@@ -89,6 +93,23 @@ class LiteRtInferenceEngine @Inject constructor(
 
     private fun isOpenClUnavailable(e: Exception): Boolean =
         e.message?.contains("OpenCL", ignoreCase = true) == true
+
+    /**
+     * "TF_LITE_PREFILL_DECODE not found in the model" means the .litertlm file
+     * has no generic CPU/GPU graph — it's a web- or NPU-specific bundle (e.g.
+     * gemma-4-E2B-it-web.litertlm) that older app versions could download by
+     * mistake. The raw library message reaches the UI, so replace it with
+     * something the user can act on.
+     */
+    private fun mapEngineError(e: Exception): Exception =
+        if (e.message?.contains("TF_LITE_PREFILL_DECODE", ignoreCase = true) == true) {
+            IllegalStateException(
+                "This model file doesn't include the on-device CPU/GPU version " +
+                    "(it looks like a web- or NPU-specific bundle). Delete the model " +
+                    "in Model Manager and download it again to get the standard bundle.",
+                e
+            )
+        } else e
 
     override fun generateStream(
         prompt: String,

@@ -317,8 +317,41 @@ class ModelRepositoryImpl @Inject constructor(
             ?: siblings.firstOrNull { it.rfilename.contains("Q4",     ignoreCase = true) && it.rfilename.endsWith(".gguf") }
             ?: siblings.firstOrNull { it.rfilename.contains("Q5_K_M", ignoreCase = true) && it.rfilename.endsWith(".gguf") }
             ?: siblings.firstOrNull { it.rfilename.endsWith(".gguf") }
-            ?: siblings.firstOrNull { it.rfilename.endsWith(".litertlm") }
-            ?: siblings.firstOrNull { it.rfilename.endsWith(".task") }
+            ?: pickRuntimeBundle(siblings, ".litertlm")
+            ?: pickRuntimeBundle(siblings, ".task")
+
+    /**
+     * Filename tokens marking a .litertlm/.task bundle as web- or NPU-specific
+     * (e.g. gemma-4-E2B-it-web.litertlm, gemma-4-E2B-it_qualcomm_sm8750.litertlm,
+     * gemma-4-E2B-it_Google_Tensor_G5.litertlm). These bundles lack the generic
+     * TF_LITE_PREFILL_DECODE CPU/GPU graph, so loading one on Android fails with
+     * "Failed to create engine: NOT_FOUND: TF_LITE_PREFILL_DECODE not found in
+     * the model." Repos list them alphabetically, so a naive firstOrNull can pick
+     * one over the runnable generic bundle.
+     */
+    private val platformSpecificTokens = setOf(
+        "web", "wasm", "npu", "drafter",
+        "intel", "qualcomm", "mediatek", "exynos", "samsung", "tensor"
+    )
+
+    private fun isGenericMobileBundle(rfilename: String): Boolean =
+        rfilename.substringAfterLast('/')
+            .substringBeforeLast('.')
+            .split('-', '_', '.')
+            .none { it.lowercase() in platformSpecificTokens }
+
+    /** Pick a runnable bundle with the given extension: generic (non web/NPU) preferred, int4 > int8 > shortest name. */
+    private fun pickRuntimeBundle(
+        siblings: List<com.chatgemma.app.data.remote.dto.HfSibling>,
+        extension: String
+    ): com.chatgemma.app.data.remote.dto.HfSibling? {
+        val candidates = siblings.filter { it.rfilename.endsWith(extension, ignoreCase = true) }
+        if (candidates.isEmpty()) return null
+        val pool = candidates.filter { isGenericMobileBundle(it.rfilename) }.ifEmpty { candidates }
+        return pool.firstOrNull { it.rfilename.contains("int4", ignoreCase = true) }
+            ?: pool.firstOrNull { it.rfilename.contains("int8", ignoreCase = true) }
+            ?: pool.minByOrNull { it.rfilename.length }
+    }
 
     /**
      * Search HuggingFace for a community GGUF conversion of the given model.

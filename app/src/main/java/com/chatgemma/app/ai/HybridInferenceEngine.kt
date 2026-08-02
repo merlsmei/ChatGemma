@@ -2,6 +2,7 @@ package com.chatgemma.app.ai
 
 import android.graphics.Bitmap
 import com.chatgemma.app.domain.model.InferenceParams
+import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -34,13 +35,22 @@ class HybridInferenceEngine @Inject constructor(
     override val isUsingGpu:   StateFlow<Boolean> get() = active?.isUsingGpu ?: noGpu
 
     override suspend fun initialize(modelPath: String, params: InferenceParams) {
-        val engine = when {
-            modelPath.endsWith(".gguf", ignoreCase = true) ||
-            modelPath.endsWith(".ggml", ignoreCase = true) -> llamaCppEngine
-            modelPath.endsWith(".litertlm", ignoreCase = true) -> liteRtEngine
-            params.modelFormat.equals("LiteRT", ignoreCase = true) -> liteRtEngine
-            params.modelFormat.equals("GGUF", ignoreCase = true) -> llamaCppEngine
-            else -> mediaPipeEngine
+        // Magic bytes are authoritative — a downloaded file can carry the wrong
+        // extension (or none), and routing e.g. a .litertlm to MediaPipe fails
+        // with "NOT_FOUND: TF_LITE_PREFILL_DECODE not found in the model".
+        val engine = when (withContext(Dispatchers.IO) { sniffFormat(modelPath) }) {
+            "GGUF" -> llamaCppEngine
+            "LiteRT" -> liteRtEngine
+            "MediaPipe" -> mediaPipeEngine
+            else -> when {
+                modelPath.endsWith(".gguf", ignoreCase = true) ||
+                modelPath.endsWith(".ggml", ignoreCase = true) -> llamaCppEngine
+                modelPath.endsWith(".litertlm", ignoreCase = true) -> liteRtEngine
+                modelPath.endsWith(".task", ignoreCase = true) -> mediaPipeEngine
+                params.modelFormat.equals("LiteRT", ignoreCase = true) -> liteRtEngine
+                params.modelFormat.equals("GGUF", ignoreCase = true) -> llamaCppEngine
+                else -> mediaPipeEngine
+            }
         }
         // Switching engines must free the old engine's model, or it stays
         // resident and doubles memory pressure. Off the main thread: llama.cpp
@@ -75,4 +85,23 @@ class HybridInferenceEngine @Inject constructor(
 
     override suspend fun countTokens(text: String): Int =
         active?.countTokens(text) ?: estimateTokens(text)
+
+    /**
+     * Identify the model container by magic bytes: "GGUF" (llama.cpp),
+     * "LITERTLM" (LiteRT-LM bundle), or a zip archive ("PK" — MediaPipe .task).
+     * Returns null when unreadable/unknown so extension routing takes over.
+     */
+    private fun sniffFormat(modelPath: String): String? = try {
+        val header = ByteArray(8)
+        val read = File(modelPath).inputStream().use { it.read(header) }
+        val ascii = String(header, 0, maxOf(read, 0), Charsets.US_ASCII)
+        when {
+            ascii.startsWith("GGUF") -> "GGUF"
+            ascii.startsWith("LITERTLM") -> "LiteRT"
+            ascii.startsWith("PK") -> "MediaPipe"
+            else -> null
+        }
+    } catch (_: Exception) {
+        null
+    }
 }
