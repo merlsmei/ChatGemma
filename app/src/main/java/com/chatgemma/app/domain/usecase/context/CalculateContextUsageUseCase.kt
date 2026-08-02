@@ -10,11 +10,21 @@ class CalculateContextUsageUseCase @Inject constructor(
 ) {
     /**
      * Returns a value between 0.0 and 1.0 representing how full the context window is.
+     *
+     * @param configuredContextSize the context size the inference engine was actually
+     * initialized with (n_ctx); capped by the model's own context length. When null,
+     * the model's context length is used.
      */
-    suspend operator fun invoke(sessionId: String, branchId: String): Float {
+    suspend operator fun invoke(
+        sessionId: String,
+        branchId: String,
+        configuredContextSize: Int? = null
+    ): Float {
         val totalTokens = chatRepository.getTotalTokenCount(sessionId, branchId)
         val activeModel = modelRepository.getActiveModel()
-        val contextLength = activeModel?.contextLength ?: 8192
-        return (totalTokens.toFloat() / contextLength.toFloat()).coerceIn(0f, 1f)
+        val modelContextLength = activeModel?.contextLength ?: 8192
+        val effectiveContext = configuredContextSize?.coerceIn(1, modelContextLength)
+            ?: modelContextLength
+        return (totalTokens.toFloat() / effectiveContext.toFloat()).coerceIn(0f, 1f)
     }
 }

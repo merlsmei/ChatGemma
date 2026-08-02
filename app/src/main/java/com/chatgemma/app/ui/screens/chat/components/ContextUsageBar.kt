@@ -18,6 +18,7 @@ import androidx.compose.ui.unit.sp
 @Composable
 fun ContextUsageBar(
     usagePercent: Float,
+    isCompressing: Boolean,
     modifier: Modifier = Modifier,
     onManageContext: () -> Unit
 ) {
@@ -30,8 +31,6 @@ fun ContextUsageBar(
         },
         label = "bar_color"
     )
-
-    if (usagePercent < 0.50f) return  // Only show when above 50%
 
     Column(modifier = modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
         Row(
@@ -56,6 +55,20 @@ fun ContextUsageBar(
                         fontWeight = if (usagePercent >= 0.85f) FontWeight.Bold else FontWeight.Normal
                     )
                 )
+                if (isCompressing) {
+                    Spacer(Modifier.width(8.dp))
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(11.dp),
+                        strokeWidth = 1.5.dp,
+                        color = MaterialTheme.colorScheme.tertiary
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        text = "Compressing context…",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.tertiary
+                    )
+                }
             }
             if (usagePercent >= 0.85f) {
                 TextButton(

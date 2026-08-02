@@ -1,6 +1,8 @@
 package com.chatgemma.app.ui.screens.chat.components
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -13,13 +15,18 @@ import kotlin.math.roundToInt
 @Composable
 fun InferenceParamsSheet(
     params: InferenceParams,
+    autoCompressEnabled: Boolean,
+    compressionThreshold: Float,
     onParamsChange: (InferenceParams) -> Unit,
+    onAutoCompressChange: (Boolean) -> Unit,
+    onCompressionThresholdChange: (Float) -> Unit,
     onDismiss: () -> Unit
 ) {
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 24.dp)
                 .padding(bottom = 32.dp)
         ) {
@@ -62,6 +69,57 @@ fun InferenceParamsSheet(
                 steps = 30,
                 onValueChange = { onParamsChange(params.copy(maxTokens = it.roundToInt())) }
             )
+
+            // Context window size (n_ctx). Larger = more history before
+            // compression kicks in, but more memory/VRAM for the KV cache.
+            ParamSlider(
+                label = "Context Window",
+                value = params.contextSize.toFloat(),
+                valueRange = 1024f..8192f,
+                displayValue = "${params.contextSize} tok",
+                steps = 6,
+                onValueChange = {
+                    onParamsChange(params.copy(contextSize = (it / 1024f).roundToInt() * 1024))
+                }
+            )
+            Text(
+                "Larger windows hold more chat history but use more memory. Requires model reload.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(16.dp))
+
+            // Auto context compression
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Auto-Compress Context", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "Summarize older messages in the background when the context window fills up.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = autoCompressEnabled,
+                    onCheckedChange = onAutoCompressChange
+                )
+            }
+            if (autoCompressEnabled) {
+                Spacer(Modifier.height(8.dp))
+                ParamSlider(
+                    label = "Compression Threshold",
+                    value = compressionThreshold,
+                    valueRange = 0.3f..0.95f,
+                    displayValue = "${(compressionThreshold * 100).roundToInt()}%",
+                    steps = 12,
+                    onValueChange = { onCompressionThresholdChange(it) }
+                )
+            }
+            Spacer(Modifier.height(8.dp))
 
             // GPU Acceleration
             Row(

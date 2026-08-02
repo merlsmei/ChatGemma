@@ -18,6 +18,7 @@ import com.chatgemma.app.data.repository.ModelRepository
 import com.chatgemma.app.domain.model.InferenceParams
 import com.chatgemma.app.domain.model.Message
 import com.chatgemma.app.domain.usecase.context.CalculateContextUsageUseCase
+import com.chatgemma.app.domain.usecase.context.CompressContextUseCase
 import com.chatgemma.app.domain.usecase.message.GetMessagesUseCase
 import com.chatgemma.app.domain.usecase.session.RollbackToMessageUseCase
 import com.chatgemma.app.domain.usecase.topic.ArchiveTopicUseCase
@@ -33,6 +34,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.update
@@ -51,6 +53,7 @@ class ChatViewModel @Inject constructor(
     private val summarizeTopicUseCase: SummarizeTopicUseCase,
     private val archiveTopicUseCase: ArchiveTopicUseCase,
     private val calculateContextUseCase: CalculateContextUsageUseCase,
+    private val compressContextUseCase: CompressContextUseCase,
     private val chatRepository: ChatRepository,
     private val modelRepository: ModelRepository,
     private val gemmaEngine: GemmaInferenceEngine,
@@ -69,12 +72,29 @@ class ChatViewModel @Inject constructor(
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
 
     private var generationJob: Job? = null
+    private var compressionJob: Job? = null
 
     init {
         loadSession()
+        loadCompressionPrefs()
         loadMessages()
         checkGpuCrashThenLoadModel()
         observeSpeech()
+    }
+
+    private fun loadCompressionPrefs() {
+        viewModelScope.launch {
+            val enabled = appPreferences.autoCompressEnabled.first()
+            val threshold = appPreferences.compressionThreshold.first()
+            val contextSize = appPreferences.contextSize.first()
+            _uiState.update {
+                it.copy(
+                    autoCompressEnabled = enabled,
+                    compressionThreshold = threshold,
+                    inferenceParams = it.inferenceParams.copy(contextSize = contextSize)
+                )
+            }
+        }
     }
 
     private fun loadSession() {
@@ -128,7 +148,10 @@ class ChatViewModel @Inject constructor(
                 val params = _uiState.value.inferenceParams.copy(
                     modelId = model.id,
                     maxTokens = 1024,
-                    modelFormat = model.modelFormat
+                    modelFormat = model.modelFormat,
+                    // Read directly from prefs so the engine always gets the
+                    // persisted value even if the async pref load hasn't landed
+                    contextSize = appPreferences.contextSize.first()
                 )
                 gemmaEngine.initialize(path, params)
                 val requestedGpu = params.gpuLayers > 0
@@ -141,6 +164,9 @@ class ChatViewModel @Inject constructor(
                     inferenceParams = params,
                     isUsingGpu = actualGpu
                 ) }
+                // A relaunched session may already be over the threshold
+                updateContextUsage()
+                maybeCompressContext()
             } catch (e: Exception) {
                 _uiState.update { it.copy(modelLoadingError = e.message ?: "Failed to load model") }
             }
@@ -298,9 +324,38 @@ class ChatViewModel @Inject constructor(
                     } catch (_: Exception) { }
                 }
                 updateContextUsage()
+                maybeCompressContext()
 
             } catch (e: Exception) {
                 _uiState.update { it.copy(isGenerating = false, error = e.message) }
+            }
+        }
+    }
+
+    /**
+     * Kicks off background context compression when usage crosses the
+     * configured threshold. The engine's internal mutex serializes it with
+     * any chat generation, so it never runs concurrently with a reply.
+     */
+    private fun maybeCompressContext() {
+        val state = _uiState.value
+        if (!state.autoCompressEnabled) return
+        if (state.isCompressingContext || state.isGenerating) return
+        if (!state.isModelLoaded) return
+        if (state.contextUsagePercent < state.compressionThreshold) return
+
+        compressionJob = viewModelScope.launch {
+            _uiState.update { it.copy(isCompressingContext = true) }
+            try {
+                val compressed = compressContextUseCase(
+                    sessionId, branchId,
+                    contextSize = state.inferenceParams.contextSize
+                )
+                if (compressed) updateContextUsage()
+            } catch (_: Exception) {
+                // Compression is best-effort; never surface a crash for it
+            } finally {
+                _uiState.update { it.copy(isCompressingContext = false) }
             }
         }
     }
@@ -396,10 +451,27 @@ class ChatViewModel @Inject constructor(
     }
 
     fun updateInferenceParams(params: InferenceParams) {
-        val gpuChanged = params.gpuLayers != _uiState.value.inferenceParams.gpuLayers
+        val current = _uiState.value.inferenceParams
+        val needsReload = params.gpuLayers != current.gpuLayers ||
+            params.contextSize != current.contextSize
         _uiState.update { it.copy(inferenceParams = params) }
-        viewModelScope.launch { appPreferences.saveInferenceParams(params) }
-        if (gpuChanged) loadModel()
+        viewModelScope.launch {
+            // Persist before reloading — loadModel reads contextSize back from prefs
+            appPreferences.saveInferenceParams(params)
+            if (needsReload) loadModel()
+        }
+    }
+
+    fun setAutoCompressEnabled(enabled: Boolean) {
+        _uiState.update { it.copy(autoCompressEnabled = enabled) }
+        viewModelScope.launch { appPreferences.setAutoCompressEnabled(enabled) }
+        if (enabled) maybeCompressContext()
+    }
+
+    fun setCompressionThreshold(threshold: Float) {
+        val clamped = threshold.coerceIn(0.3f, 0.95f)
+        _uiState.update { it.copy(compressionThreshold = clamped) }
+        viewModelScope.launch { appPreferences.setCompressionThreshold(clamped) }
     }
 
     fun dismissError() {
@@ -407,7 +479,10 @@ class ChatViewModel @Inject constructor(
     }
 
     private suspend fun updateContextUsage() {
-        val usage = calculateContextUseCase(sessionId, branchId)
+        val usage = calculateContextUseCase(
+            sessionId, branchId,
+            configuredContextSize = _uiState.value.inferenceParams.contextSize
+        )
         _uiState.update {
             it.copy(
                 contextUsagePercent = usage,
@@ -438,6 +513,7 @@ class ChatViewModel @Inject constructor(
     override fun onCleared() {
         super.onCleared()
         generationJob?.cancel()
+        compressionJob?.cancel()
         speechService.release()
     }
 }

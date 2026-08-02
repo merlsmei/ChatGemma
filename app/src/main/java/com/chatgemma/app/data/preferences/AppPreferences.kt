@@ -27,6 +27,11 @@ class AppPreferences @Inject constructor(
     val topP: Flow<Float> = dataStore.data.map { it[Keys.TOP_P] ?: 0.95f }
     val activeModelId: Flow<String> = dataStore.data.map { it[Keys.ACTIVE_MODEL_ID] ?: "" }
     val gpuLayers: Flow<Int> = dataStore.data.map { it[Keys.GPU_LAYERS] ?: 0 }
+    val contextSize: Flow<Int> = dataStore.data.map { it[Keys.CONTEXT_SIZE] ?: 4096 }
+
+    // Context compression
+    val autoCompressEnabled: Flow<Boolean> = dataStore.data.map { it[Keys.AUTO_COMPRESS_ENABLED] ?: true }
+    val compressionThreshold: Flow<Float> = dataStore.data.map { it[Keys.COMPRESS_THRESHOLD] ?: 0.8f }
 
     // UI prefs
     val isDarkTheme: Flow<Boolean> = dataStore.data.map { it[Keys.IS_DARK_THEME] ?: true }
@@ -44,7 +49,16 @@ class AppPreferences @Inject constructor(
             it[Keys.TOP_P] = params.topP
             it[Keys.ACTIVE_MODEL_ID] = params.modelId
             it[Keys.GPU_LAYERS] = params.gpuLayers
+            it[Keys.CONTEXT_SIZE] = params.contextSize
         }
+    }
+
+    suspend fun setAutoCompressEnabled(enabled: Boolean) {
+        dataStore.edit { it[Keys.AUTO_COMPRESS_ENABLED] = enabled }
+    }
+
+    suspend fun setCompressionThreshold(threshold: Float) {
+        dataStore.edit { it[Keys.COMPRESS_THRESHOLD] = threshold.coerceIn(0.3f, 0.95f) }
     }
 
     suspend fun setDarkTheme(dark: Boolean) {
@@ -94,6 +108,9 @@ class AppPreferences @Inject constructor(
         val LAST_SESSION_ID = stringPreferencesKey("last_session_id")
         val LAST_BRANCH_ID = stringPreferencesKey("last_branch_id")
         val GPU_LAYERS = intPreferencesKey("gpu_layers")
+        val CONTEXT_SIZE = intPreferencesKey("context_size")
+        val AUTO_COMPRESS_ENABLED = booleanPreferencesKey("auto_compress_enabled")
+        val COMPRESS_THRESHOLD = floatPreferencesKey("compress_threshold")
         val GPU_SENTINEL = booleanPreferencesKey("gpu_sentinel")
         val LAST_HF_CHECK = longPreferencesKey("last_hf_check")
     }
