@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -19,10 +20,18 @@ import javax.inject.Singleton
 @Singleton
 class LlamaCppInferenceEngine @Inject constructor() : GemmaInferenceEngine {
 
+    @Volatile
     private var modelHandle: Long = 0L
+    // Guards reads of modelHandle paired with nativeCancel, so a cancel can
+    // never race a concurrent nativeFree and touch a dangling handle.
+    private val handleLock = Any()
     private val _isReady = MutableStateFlow(false)
     private val _isGenerating = MutableStateFlow(false)
     private val _isUsingGpu = MutableStateFlow(false)
+    // Serializes every native call that uses the model handle (generate,
+    // countTokens, free). release() acquires it too, so the model can never be
+    // freed while a ggml compute thread is still decoding — that use-after-free
+    // was crashing the app inside libggml-cpu.so.
     private val inferenceMutex = Mutex()
 
     @Volatile
@@ -60,14 +69,21 @@ class LlamaCppInferenceEngine @Inject constructor() : GemmaInferenceEngine {
 
             nativeInit()
             val nCtx     = params.contextSize.coerceIn(512, 8192)
-            val nThreads = Runtime.getRuntime().availableProcessors().coerceAtMost(8)
+            // Leave the efficiency cores out: ggml synchronizes all threads at
+            // every op, so on big.LITTLE SoCs (e.g. Snapdragon 8 Gen 3: 6 big
+            // + 2 little) the slowest core gates every layer.
+            val cores    = Runtime.getRuntime().availableProcessors()
+            val nThreads = (cores - 2).coerceIn(2, 6)
             val handle = nativeLoadModel(modelPath, nCtx, nThreads, params.gpuLayers)
             if (handle == 0L) throw IllegalStateException(
                 "llama.cpp could not load $modelPath (${"%.1f".format(file.length() / (1024f * 1024f))} MB). " +
                 "The model format may be unsupported. Try a different GGUF quantization."
             )
             modelHandle = handle
-            _isUsingGpu.value = params.gpuLayers > 0
+            // Only report GPU when a GPU backend device actually registered;
+            // requesting gpuLayers > 0 with no OpenCL device silently runs on
+            // CPU, and the UI should say so.
+            _isUsingGpu.value = params.gpuLayers > 0 && nativeHasGpuBackend()
             _isReady.value = true
         }
     }
@@ -82,9 +98,11 @@ class LlamaCppInferenceEngine @Inject constructor() : GemmaInferenceEngine {
     override fun generateStream(
         prompt: String, images: List<Bitmap>, params: InferenceParams
     ): Flow<String> = channelFlow {
-        val h = modelHandle.takeIf { it != 0L }
-            ?: throw IllegalStateException("Model not loaded")
         inferenceMutex.withLock {
+            // Read the handle only after acquiring the mutex: release() zeroes
+            // it under the same mutex, so a stale handle can't reach JNI.
+            val h = modelHandle.takeIf { it != 0L }
+                ?: throw IllegalStateException("Model not loaded")
             _isGenerating.value = true
             try {
                 tokenSink = { token -> trySend(token) }
@@ -114,22 +132,40 @@ class LlamaCppInferenceEngine @Inject constructor() : GemmaInferenceEngine {
         }
     }
 
-    override fun cancelGeneration() { _isGenerating.value = false }
+    override fun cancelGeneration() {
+        synchronized(handleLock) {
+            val h = modelHandle
+            if (h != 0L) nativeCancel(h)
+        }
+        _isGenerating.value = false
+    }
 
     override fun release() {
-        val h = modelHandle
-        if (h != 0L) { try { nativeFree(h) } catch (_: Exception) {} }
-        modelHandle = 0L
+        // Ask any in-flight generation to stop, then wait for it to release
+        // the inference mutex before freeing the model. Freeing while ggml
+        // compute threads are mid-decode is a native use-after-free crash.
+        synchronized(handleLock) {
+            val h = modelHandle
+            if (h != 0L) nativeCancel(h)
+        }
+        runBlocking {
+            inferenceMutex.withLock {
+                val h = synchronized(handleLock) {
+                    modelHandle.also { modelHandle = 0L }
+                }
+                if (h != 0L) { try { nativeFree(h) } catch (_: Exception) {} }
+            }
+        }
         _isReady.value = false
         _isGenerating.value = false
     }
 
     override suspend fun countTokens(text: String): Int {
-        val h = modelHandle
-        return if (h != 0L && available) {
-            withContext(Dispatchers.IO) { nativeCountTokens(h, text) }
-        } else {
-            (text.length / 4).coerceAtLeast(1)
+        if (!available || modelHandle == 0L) return estimateTokens(text)
+        return inferenceMutex.withLock {
+            val h = modelHandle
+            if (h == 0L) estimateTokens(text)
+            else withContext(Dispatchers.IO) { nativeCountTokens(h, text) }
         }
     }
 
@@ -143,5 +179,7 @@ class LlamaCppInferenceEngine @Inject constructor() : GemmaInferenceEngine {
         handle: Long, prompt: String, maxTokens: Int, temperature: Float, topP: Float
     )
     private external fun nativeCountTokens(handle: Long, text: String): Int
+    private external fun nativeCancel(handle: Long)
+    private external fun nativeHasGpuBackend(): Boolean
     private external fun nativeFree(handle: Long)
 }

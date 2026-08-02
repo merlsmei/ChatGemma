@@ -29,7 +29,9 @@ import com.chatgemma.app.service.SpeechService
 import com.google.gson.Gson
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -39,6 +41,7 @@ import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.UUID
 import javax.inject.Inject
 
@@ -219,7 +222,11 @@ class ChatViewModel @Inject constructor(
             },
             mediaUri = videoUri?.toString() ?: images.firstOrNull()?.toString(),
             createdAt = now,
-            tokenCount = gemmaEngine.let { (text.length / 4).coerceAtLeast(1) },
+            // Provisional estimate; replaced with a real tokenizer count when
+            // the message is persisted below. length/4 undercounts CJK text
+            // (≈1 token per character, not per 4) by a factor of 4-8, which
+            // made the context bar read ~20% when the window was nearly full.
+            tokenCount = (text.length / 4).coerceAtLeast(1),
             inferenceParamsJson = gson.toJson(state.inferenceParams)
         )
 
@@ -242,7 +249,11 @@ class ChatViewModel @Inject constructor(
             try {
                 // Persist the user message immediately so it survives even if
                 // generation fails or is cancelled
-                chatRepository.insertMessage(userMessage)
+                chatRepository.insertMessage(
+                    userMessage.copy(
+                        tokenCount = gemmaEngine.countTokens(text).coerceAtLeast(1)
+                    )
+                )
 
                 // Build image bitmaps
                 val bitmaps = mutableListOf<Bitmap>()
@@ -272,15 +283,24 @@ class ChatViewModel @Inject constructor(
 
                 val accumulated = StringBuilder()
                 var streamError: String? = null
-                gemmaEngine.generateStream(prompt, bitmaps, state.inferenceParams)
-                    .catch { e -> streamError = e.message ?: "Generation failed" }
-                    .collect { partial ->
-                        accumulated.append(partial)
-                        _uiState.update { it.copy(streamingText = stripControlTokens(accumulated.toString())) }
+                try {
+                    gemmaEngine.generateStream(prompt, bitmaps, state.inferenceParams)
+                        .catch { e -> streamError = e.message ?: "Generation failed" }
+                        .collect { partial ->
+                            accumulated.append(partial)
+                            _uiState.update { it.copy(streamingText = stripControlTokens(accumulated.toString())) }
+                        }
+                } finally {
+                    // Clear the sentinel on every in-process outcome — success,
+                    // error, or cancellation (stop button / leaving the screen).
+                    // Only a real native crash skips this, so the sentinel no
+                    // longer disables GPU just because a generation was
+                    // interrupted. NonCancellable so the DataStore write still
+                    // runs when this coroutine is being cancelled.
+                    if (gpuActive) withContext(NonCancellable) {
+                        appPreferences.setGpuSentinel(false)
                     }
-
-                // GPU inference survived — clear the sentinel
-                if (gpuActive) appPreferences.setGpuSentinel(false)
+                }
 
                 val cleanResponse = stripControlTokens(accumulated.toString())
                 val responseText = when {
@@ -296,7 +316,7 @@ class ChatViewModel @Inject constructor(
                     role = "model",
                     textContent = responseText,
                     createdAt = System.currentTimeMillis(),
-                    tokenCount = (accumulated.length / 4).coerceAtLeast(1),
+                    tokenCount = gemmaEngine.countTokens(responseText).coerceAtLeast(1),
                     inferenceParamsJson = gson.toJson(state.inferenceParams)
                 )
 
@@ -326,6 +346,10 @@ class ChatViewModel @Inject constructor(
                 updateContextUsage()
                 maybeCompressContext()
 
+            } catch (e: CancellationException) {
+                // User stopped generation or left the screen — not an error.
+                _uiState.update { it.copy(isGenerating = false, streamingText = "") }
+                throw e
             } catch (e: Exception) {
                 _uiState.update { it.copy(isGenerating = false, error = e.message) }
             }

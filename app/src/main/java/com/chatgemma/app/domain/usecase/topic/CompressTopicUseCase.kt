@@ -25,7 +25,7 @@ class CompressTopicUseCase @Inject constructor(
 
         // Replace all topic messages with a single compressed summary message
         val firstMessage = messages.first()
-        val newTokenCount = (compressed.length / 4).coerceAtLeast(1)
+        val newTokenCount = gemmaEngine.countTokens(compressed).coerceAtLeast(1)
         chatRepository.updateMessageContent(firstMessage.id, compressed, newTokenCount)
 
         // Remove remaining messages in this topic (keep only the first)

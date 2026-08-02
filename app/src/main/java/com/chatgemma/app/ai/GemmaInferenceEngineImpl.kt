@@ -118,9 +118,7 @@ class GemmaInferenceEngineImpl @Inject constructor(
         _isGenerating.value = false
     }
 
-    override suspend fun countTokens(text: String): Int {
-        return (text.length / 4).coerceAtLeast(1)
-    }
+    override suspend fun countTokens(text: String): Int = estimateTokens(text)
 
     private companion object {
         const val TAG = "GemmaEngine"

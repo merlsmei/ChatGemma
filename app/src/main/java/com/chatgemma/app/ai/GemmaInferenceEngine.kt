@@ -18,3 +18,22 @@ interface GemmaInferenceEngine {
     fun release()
     suspend fun countTokens(text: String): Int
 }
+
+/**
+ * Heuristic token estimate for when no real tokenizer is available.
+ * CJK characters tokenize to roughly one token each, while Latin text
+ * averages ~4 characters per token — a flat length/4 undercounts Chinese
+ * conversations by 4-8x.
+ */
+internal fun estimateTokens(text: String): Int {
+    var cjk = 0
+    for (c in text) {
+        val code = c.code
+        if (code in 0x2E80..0x9FFF ||   // CJK radicals, kana, CJK unified
+            code in 0xAC00..0xD7AF ||   // Hangul syllables
+            code in 0xF900..0xFAFF) {   // CJK compatibility ideographs
+            cjk++
+        }
+    }
+    return (cjk + (text.length - cjk) / 4).coerceAtLeast(1)
+}
