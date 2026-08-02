@@ -4,6 +4,7 @@
 #include <cstring>
 #include <cstdio>
 #include <algorithm>
+#include <atomic>
 #include <android/log.h>
 #include "llama.h"
 #include "ggml-backend.h"
@@ -18,6 +19,10 @@ struct LlamaHandle {
     llama_model* model;
     int nCtx;
     int nThreads;
+    // Set by nativeCancel (from cancelGeneration/release on the Kotlin side);
+    // checked between decode steps so an in-flight generation stops promptly
+    // instead of running on while the model is about to be freed.
+    std::atomic<bool> cancelRequested{false};
 };
 
 // llama_decode GGML_ABORTs the whole process when a single batch exceeds
@@ -29,8 +34,13 @@ static const int PROMPT_BATCH = 512;
 // after the prompt is evaluated.
 static const int MIN_GENERATION_HEADROOM = 16;
 
-static bool decode_prompt_chunked(llama_context* ctx, std::vector<llama_token>& tokens) {
+static bool decode_prompt_chunked(llama_context* ctx, std::vector<llama_token>& tokens,
+                                  const std::atomic<bool>& cancel) {
     for (size_t i = 0; i < tokens.size(); i += (size_t)PROMPT_BATCH) {
+        if (cancel.load(std::memory_order_relaxed)) {
+            LOGI("Prompt decode cancelled at chunk offset %zu", i);
+            return false;
+        }
         int n = (int)std::min((size_t)PROMPT_BATCH, tokens.size() - i);
         llama_batch batch = llama_batch_get_one(tokens.data() + i, n);
         if (llama_decode(ctx, batch) != 0) {
@@ -87,6 +97,7 @@ Java_com_chatgemma_app_ai_LlamaCppInferenceEngine_nativeGenerate(
 
     auto* h = reinterpret_cast<LlamaHandle*>(handle);
     if (!h) return env->NewStringUTF("");
+    h->cancelRequested.store(false, std::memory_order_relaxed);
 
     const struct llama_vocab* vocab = llama_model_get_vocab(h->model);
     const char* prompt = env->GetStringUTFChars(jPrompt, nullptr);
@@ -115,9 +126,12 @@ Java_com_chatgemma_app_ai_LlamaCppInferenceEngine_nativeGenerate(
     // Create a fresh context so we never need to clear the KV cache.
     // This sidesteps the llama_kv_cache_clear → llama_kv_self_clear rename.
     llama_context_params cp = llama_context_default_params();
-    cp.n_ctx     = static_cast<uint32_t>(h->nCtx);
-    cp.n_batch   = static_cast<uint32_t>(PROMPT_BATCH);
-    cp.n_threads = static_cast<uint32_t>(h->nThreads);
+    cp.n_ctx           = static_cast<uint32_t>(h->nCtx);
+    cp.n_batch         = static_cast<uint32_t>(PROMPT_BATCH);
+    cp.n_threads       = static_cast<uint32_t>(h->nThreads);
+    // Without this, prompt (batch) evaluation uses llama.cpp's default thread
+    // count instead of ours, crippling prefill speed on-device.
+    cp.n_threads_batch = static_cast<uint32_t>(h->nThreads);
     llama_context* ctx = llama_init_from_model(h->model, cp);
     if (!ctx) {
         LOGE("Failed to create context");
@@ -125,7 +139,7 @@ Java_com_chatgemma_app_ai_LlamaCppInferenceEngine_nativeGenerate(
     }
 
     // Evaluate prompt tokens in n_batch-sized chunks
-    if (!decode_prompt_chunked(ctx, tokens)) {
+    if (!decode_prompt_chunked(ctx, tokens, h->cancelRequested)) {
         llama_free(ctx);
         return env->NewStringUTF("[Error: prompt decode failed]");
     }
@@ -147,6 +161,7 @@ Java_com_chatgemma_app_ai_LlamaCppInferenceEngine_nativeGenerate(
     int nGenerated = 0;
     int maxGen = std::min((int)maxNewTokens, h->nCtx - nPrompt - 1);
     for (int i = 0; i < maxGen; ++i) {
+        if (h->cancelRequested.load(std::memory_order_relaxed)) break;
         llama_token tok = llama_sampler_sample(sampler, ctx, -1);
         llama_sampler_accept(sampler, tok);
         if (llama_vocab_is_eog(vocab, tok)) break;
@@ -174,6 +189,7 @@ Java_com_chatgemma_app_ai_LlamaCppInferenceEngine_nativeGenerateStreaming(
 
     auto* h = reinterpret_cast<LlamaHandle*>(handle);
     if (!h) return;
+    h->cancelRequested.store(false, std::memory_order_relaxed);
 
     // Look up the onToken callback once before entering the loop
     jclass cls = env->GetObjectClass(thiz);
@@ -205,17 +221,19 @@ Java_com_chatgemma_app_ai_LlamaCppInferenceEngine_nativeGenerateStreaming(
     }
 
     llama_context_params cp = llama_context_default_params();
-    cp.n_ctx     = static_cast<uint32_t>(h->nCtx);
-    cp.n_batch   = static_cast<uint32_t>(PROMPT_BATCH);
-    cp.n_threads = static_cast<uint32_t>(h->nThreads);
+    cp.n_ctx           = static_cast<uint32_t>(h->nCtx);
+    cp.n_batch         = static_cast<uint32_t>(PROMPT_BATCH);
+    cp.n_threads       = static_cast<uint32_t>(h->nThreads);
+    cp.n_threads_batch = static_cast<uint32_t>(h->nThreads);
     llama_context* ctx = llama_init_from_model(h->model, cp);
     if (!ctx) {
         LOGE("Failed to create context");
         return;
     }
 
-    if (!decode_prompt_chunked(ctx, tokens)) {
+    if (!decode_prompt_chunked(ctx, tokens, h->cancelRequested)) {
         llama_free(ctx);
+        if (h->cancelRequested.load(std::memory_order_relaxed)) return;  // cancelled, not an error
         jclass excCls = env->FindClass("java/lang/RuntimeException");
         env->ThrowNew(excCls, "llama.cpp: prompt decode failed");
         return;
@@ -234,6 +252,7 @@ Java_com_chatgemma_app_ai_LlamaCppInferenceEngine_nativeGenerateStreaming(
     int nGenerated = 0;
     int maxGen = std::min((int)maxNewTokens, h->nCtx - nPrompt - 1);
     for (int i = 0; i < maxGen; ++i) {
+        if (h->cancelRequested.load(std::memory_order_relaxed)) break;
         llama_token tok = llama_sampler_sample(sampler, ctx, -1);
         llama_sampler_accept(sampler, tok);
         if (llama_vocab_is_eog(vocab, tok)) break;
@@ -246,6 +265,12 @@ Java_com_chatgemma_app_ai_LlamaCppInferenceEngine_nativeGenerateStreaming(
             jstring jPiece = env->NewStringUTF(s.c_str());
             env->CallVoidMethod(thiz, onTokenId, jPiece);
             env->DeleteLocalRef(jPiece);
+            // A pending Java exception makes further JNI calls undefined
+            // behavior — stop generating instead of crashing the process.
+            if (env->ExceptionCheck()) {
+                env->ExceptionClear();
+                break;
+            }
         }
         nGenerated++;
 
@@ -269,6 +294,25 @@ Java_com_chatgemma_app_ai_LlamaCppInferenceEngine_nativeCountTokens(
                             nullptr, 0, false, false);
     env->ReleaseStringUTFChars(jText, text);
     return n > 0 ? n : 0;
+}
+
+JNIEXPORT void JNICALL
+Java_com_chatgemma_app_ai_LlamaCppInferenceEngine_nativeCancel(
+        JNIEnv*, jobject, jlong handle) {
+    auto* h = reinterpret_cast<LlamaHandle*>(handle);
+    if (!h) return;
+    h->cancelRequested.store(true, std::memory_order_relaxed);
+    LOGI("Cancel requested");
+}
+
+// True when ggml actually registered a GPU device (OpenCL/Adreno). The Kotlin
+// side uses this so isUsingGpu reflects reality instead of just the requested
+// gpuLayers setting.
+JNIEXPORT jboolean JNICALL
+Java_com_chatgemma_app_ai_LlamaCppInferenceEngine_nativeHasGpuBackend(
+        JNIEnv*, jobject) {
+    return ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU) != nullptr
+        ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT void JNICALL

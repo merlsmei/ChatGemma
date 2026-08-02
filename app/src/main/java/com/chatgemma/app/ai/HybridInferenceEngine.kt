@@ -2,10 +2,12 @@ package com.chatgemma.app.ai
 
 import android.graphics.Bitmap
 import com.chatgemma.app.domain.model.InferenceParams
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -40,6 +42,13 @@ class HybridInferenceEngine @Inject constructor(
             params.modelFormat.equals("GGUF", ignoreCase = true) -> llamaCppEngine
             else -> mediaPipeEngine
         }
+        // Switching engines must free the old engine's model, or it stays
+        // resident and doubles memory pressure. Off the main thread: llama.cpp
+        // release() blocks until any in-flight generation stops.
+        val previous = active
+        if (previous != null && previous !== engine) {
+            withContext(Dispatchers.IO) { previous.release() }
+        }
         active = engine
         engine.initialize(modelPath, params)
         _isReady.value = true
@@ -65,5 +74,5 @@ class HybridInferenceEngine @Inject constructor(
     }
 
     override suspend fun countTokens(text: String): Int =
-        active?.countTokens(text) ?: (text.length / 4).coerceAtLeast(1)
+        active?.countTokens(text) ?: estimateTokens(text)
 }

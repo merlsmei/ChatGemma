@@ -49,6 +49,14 @@ llama.cpp no longer publishes pre-built Android `.so` files. The workflow builds
 
 `llama_jni.cpp` creates and destroys `llama_context` on every `nativeGenerate` call. This avoids needing `llama_kv_cache_clear` / `llama_kv_self_clear` (which was also renamed), at the cost of slightly higher per-call overhead. The model itself (`llama_model`) is kept loaded across calls.
 
+### Cancellation & Free Ordering (crash-critical)
+
+`LlamaHandle` carries an `std::atomic<bool> cancelRequested` checked between decode steps. `nativeCancel` sets it; both generate loops and `decode_prompt_chunked` exit promptly when set.
+
+On the Kotlin side (`LlamaCppInferenceEngine`), **every** native call that uses the model handle runs under `inferenceMutex`, and `release()` (a) calls `nativeCancel` to break any in-flight generation, then (b) acquires the mutex before `nativeFree`. Never call `nativeFree` outside this path: freeing the model while ggml compute threads are decoding is a use-after-free SIGSEGV inside `libggml-cpu.so` worker threads (observed on-device). Handle reads must happen *after* acquiring the mutex, since `release()` zeroes the handle under the same mutex.
+
+The GPU crash sentinel (`AppPreferences.setGpuSentinel`) must be cleared in a `finally` with `NonCancellable` — clearing it only on the success path causes cancelled generations (stop button, leaving the screen, process kill) to masquerade as GPU crashes and silently disable GPU acceleration on next launch.
+
 ### Conditional NDK Build in build.gradle.kts
 
 The `externalNativeBuild` block is only enabled when `libllama.so` is present (populated by CI). This lets local developer builds skip the NDK entirely:

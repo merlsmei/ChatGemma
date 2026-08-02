@@ -185,8 +185,7 @@ class LiteRtInferenceEngine @Inject constructor(
         _isGenerating.value = false
     }
 
-    override suspend fun countTokens(text: String): Int =
-        (text.length / 4).coerceAtLeast(1)
+    override suspend fun countTokens(text: String): Int = estimateTokens(text)
 
     // Parses Gemma-formatted prompts and returns only the last user message text.
     private fun extractLastUserMessage(prompt: String): String {
