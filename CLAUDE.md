@@ -99,9 +99,9 @@ Modern llama.cpp distributes headers across multiple directories. The CI step co
 
 llama.cpp no longer publishes pre-built Android `.so` files. The workflow builds from source:
 1. Clone pinned tag (`b8763`) — **do not use unpinned HEAD**; upstream changes break CI
-2. Install OpenCL headers (`KhronosGroup/OpenCL-Headers`) into the NDK sysroot, then build `KhronosGroup/OpenCL-ICD-Loader` against the NDK toolchain to produce `libOpenCL.so` (also installed into the NDK sysroot for linking)
+2. Install OpenCL headers (`KhronosGroup/OpenCL-Headers`) into the NDK sysroot, then build `KhronosGroup/OpenCL-ICD-Loader` against the NDK toolchain to produce `libOpenCL.so`, installed into the NDK sysroot **for link-time only**
 3. CMake configure with NDK toolchain, `BUILD_SHARED_LIBS=ON`, `GGML_OPENCL=ON` + `GGML_OPENCL_USE_ADRENO_KERNELS=ON` + `GGML_OPENCL_EMBED_KERNELS=ON`, `GGML_VULKAN=OFF`, no tests/examples/Metal/CUDA
-4. Copy `.so` outputs (including `libggml-opencl.so`) to `app/src/main/jniLibs/arm64-v8a/`, plus the built `libOpenCL.so` ICD loader (so `libggml-opencl.so`'s runtime dependency resolves and dispatches to the on-device Adreno driver)
+4. Copy `.so` outputs (including `libggml-opencl.so`) to `app/src/main/jniLibs/arm64-v8a/`. **Never bundle a `libOpenCL.so` into the APK** — an app-local `libOpenCL.so` shadows the vendor OpenCL driver for the whole process, including LiteRT-LM's GPU backend which dlopens `libOpenCL.so` by name. The Khronos ICD loader finds no `.icd` files on-device, so every OpenCL consumer saw zero platforms: LiteRT GPU generations wedged/crashed while the AI Edge Gallery worked on the same phone, and llama.cpp silently ran CPU-only. At runtime `libggml-opencl.so`'s `DT_NEEDED libOpenCL.so` resolves to the real vendor driver through the manifest's `<uses-native-library>` entries; on devices with no public vendor `libOpenCL.so`, the guarded `System.loadLibrary("chatgemma_llama")` marks llama.cpp unavailable instead of crashing
 5. Copy headers to `app/src/main/cpp/llama_include/`
 6. Cache by `llama_jni.cpp` hash to avoid rebuilding on every push
 
