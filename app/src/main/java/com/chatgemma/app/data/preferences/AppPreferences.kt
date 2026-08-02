@@ -26,7 +26,9 @@ class AppPreferences @Inject constructor(
     val topK: Flow<Int> = dataStore.data.map { it[Keys.TOP_K] ?: 40 }
     val topP: Flow<Float> = dataStore.data.map { it[Keys.TOP_P] ?: 0.95f }
     val activeModelId: Flow<String> = dataStore.data.map { it[Keys.ACTIVE_MODEL_ID] ?: "" }
-    val gpuLayers: Flow<Int> = dataStore.data.map { it[Keys.GPU_LAYERS] ?: 0 }
+    // Default must match InferenceParams.gpuLayers (99 = GPU on) — an unset
+    // preference must not read as "GPU disabled".
+    val gpuLayers: Flow<Int> = dataStore.data.map { it[Keys.GPU_LAYERS] ?: 99 }
     val contextSize: Flow<Int> = dataStore.data.map { it[Keys.CONTEXT_SIZE] ?: 4096 }
 
     // Context compression

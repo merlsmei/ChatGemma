@@ -115,16 +115,41 @@ class ChatViewModel @Inject constructor(
 
     private fun checkGpuCrashThenLoadModel() {
         viewModelScope.launch {
+            restoreSavedInferenceParams()
             val crashed = appPreferences.checkAndResetGpuCrash()
             if (crashed) {
                 _uiState.update {
                     it.copy(
                         inferenceParams = it.inferenceParams.copy(gpuLayers = 0),
-                        error = "GPU acceleration crashed on last run and has been disabled."
+                        error = "GPU acceleration crashed on last run and has been disabled. " +
+                            "You can re-enable it in the inference settings."
                     )
                 }
             }
             loadModel()
+        }
+    }
+
+    /**
+     * Restore the persisted sampler + GPU settings before any GPU decision.
+     * Without this, InferenceParams defaults (gpuLayers=99) win on every
+     * launch, so a crash-triggered GPU disable never outlives the session and
+     * sampler customizations are lost on restart.
+     */
+    private suspend fun restoreSavedInferenceParams() {
+        val temperature = appPreferences.temperature.first()
+        val topK = appPreferences.topK.first()
+        val topP = appPreferences.topP.first()
+        val gpuLayers = appPreferences.gpuLayers.first()
+        _uiState.update {
+            it.copy(
+                inferenceParams = it.inferenceParams.copy(
+                    temperature = temperature,
+                    topK = topK,
+                    topP = topP,
+                    gpuLayers = gpuLayers
+                )
+            )
         }
     }
 
@@ -287,8 +312,10 @@ class ChatViewModel @Inject constructor(
                     systemPrompt = state.systemPrompt?.takeIf { it.isNotBlank() }
                 )
 
-                // Set GPU crash sentinel before inference if GPU is active
-                val gpuActive = state.inferenceParams.gpuLayers > 0
+                // Arm the GPU crash sentinel only when the engine actually runs
+                // on the GPU — a requested-but-fallen-back-to-CPU engine must
+                // not blame the GPU for a mid-generation process death.
+                val gpuActive = state.inferenceParams.gpuLayers > 0 && gemmaEngine.isUsingGpu.value
                 if (gpuActive) appPreferences.setGpuSentinel(true)
 
                 val accumulated = StringBuilder()
